@@ -1,0 +1,23 @@
+# MK3 Amplifier Network Diagnostic Tool - Dependencies
+
+# GUI Framework
+customtkinter>=5.2.0
+Pillow>=10.0.0
+
+# HTTP Client
+requests>=2.31.0
+
+# DNS Queries
+dnspython>=2.4.0
+
+# mDNS/Bonjour Discovery
+zeroconf>=0.131.0
+
+# Network Interface Info
+netifaces>=0.11.0
+
+# Async support
+asyncio-atexit>=1.0.1
+
+# Development/Build
+pyinstaller>=6.0.0
