@@ -52,17 +52,66 @@ class MK3Command(Enum):
 # Group command base codes (requires 5th byte for group index)
 class MK3GroupCommand(Enum):
     """MK3 Per-Group Commands (append group index 00-07)."""
+    POWER_ON = bytes([0xFF, 0x55, 0x02, 0x65])
+    POWER_OFF = bytes([0xFF, 0x55, 0x02, 0x66])
+    POWER_TOGGLE = bytes([0xFF, 0x55, 0x02, 0x67])
     VOLUME_UP = bytes([0xFF, 0x55, 0x02, 0x04])
     VOLUME_DOWN = bytes([0xFF, 0x55, 0x02, 0x05])
     MUTE_TOGGLE = bytes([0xFF, 0x55, 0x02, 0x06])
     MUTE_ON = bytes([0xFF, 0x55, 0x02, 0x07])
     MUTE_OFF = bytes([0xFF, 0x55, 0x02, 0x08])
+    SOURCE_1 = bytes([0xFF, 0x55, 0x02, 0x09])
+    SOURCE_2 = bytes([0xFF, 0x55, 0x02, 0x0A])
+    SOURCE_3 = bytes([0xFF, 0x55, 0x02, 0x0B])
+    SOURCE_4 = bytes([0xFF, 0x55, 0x02, 0x0C])
+    RETURN_TO_TURN_ON_VOL = bytes([0xFF, 0x55, 0x02, 0x0D])
+    VOLUME_UP_3DB = bytes([0xFF, 0x55, 0x02, 0x0E])
+    VOLUME_DOWN_3DB = bytes([0xFF, 0x55, 0x02, 0x0F])
 
-    # Query commands
+    # Query commands (per-group)
     QUERY_VOLUME = bytes([0xFF, 0x55, 0x02, 0x10])
     QUERY_SOURCE = bytes([0xFF, 0x55, 0x02, 0x11])
     QUERY_MUTE = bytes([0xFF, 0x55, 0x02, 0x12])
     QUERY_PROTECT = bytes([0xFF, 0x55, 0x02, 0x13])  # Per-group protect status
+
+
+class MK3ChannelCommand(Enum):
+    """
+    MK3 Per-Channel Commands (append channel index).
+
+    Channel indices (for DSP8-130):
+    0x08 = Channel 1L    0x09 = Channel 1R
+    0x0A = Channel 2L    0x0B = Channel 2R
+    0x0C = Channel 3L    0x0D = Channel 3R
+    0x0E = Channel 4L    0x0F = Channel 4R
+    """
+    QUERY_DSP_PRESET = bytes([0xFF, 0x55, 0x02, 0x16])     # DSP EQ preset
+    QUERY_SHORT_PROTECT = bytes([0xFF, 0x55, 0x02, 0x17])  # Short circuit protect status
+    QUERY_OVERTEMP = bytes([0xFF, 0x55, 0x02, 0x18])       # Over-temperature status
+
+
+# Channel index constants
+class ChannelIndex:
+    """Physical output channel indices for per-channel queries."""
+    CH1_LEFT = 0x08
+    CH1_RIGHT = 0x09
+    CH2_LEFT = 0x0A
+    CH2_RIGHT = 0x0B
+    CH3_LEFT = 0x0C
+    CH3_RIGHT = 0x0D
+    CH4_LEFT = 0x0E
+    CH4_RIGHT = 0x0F
+
+    # Map for iteration
+    ALL_8CH = [0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F]
+    ALL_2CH = [0x08, 0x09]  # For 2-channel models
+
+    NAMES = {
+        0x08: "1L", 0x09: "1R",
+        0x0A: "2L", 0x0B: "2R",
+        0x0C: "3L", 0x0D: "3R",
+        0x0E: "4L", 0x0F: "4R"
+    }
 
 
 # ============================================================================
@@ -209,6 +258,21 @@ class MK3ThermalStatus:
 
 
 @dataclass
+class MK3ChannelStatus:
+    """Status of a single output channel (for per-channel protection queries)."""
+    channel_index: int
+    channel_name: str  # "1L", "1R", "2L", etc.
+    dsp_preset: Optional[str] = None
+    has_short: bool = False
+    short_status: str = "Unknown"
+    has_overtemp: bool = False
+    overtemp_status: str = "Unknown"
+    raw_dsp_preset: Optional[bytes] = None
+    raw_short_protect: Optional[bytes] = None
+    raw_overtemp: Optional[bytes] = None
+
+
+@dataclass
 class MK3DeviceStatus:
     """Complete device status."""
     ip: str
@@ -218,6 +282,7 @@ class MK3DeviceStatus:
     global_protect: Optional[MK3GlobalProtectStatus] = None
     thermal_status: Optional[MK3ThermalStatus] = None
     groups: List[MK3GroupStatus] = field(default_factory=list)
+    channels: List[MK3ChannelStatus] = field(default_factory=list)  # Per-channel protection status
     protocol_version: Optional[str] = None
     response_times: Dict[str, float] = field(default_factory=dict)
     errors: List[str] = field(default_factory=list)
@@ -807,3 +872,275 @@ class MK3ProtocolTester:
             results['max_response_ms'] = max(results['response_times'])
 
         return results
+
+    def query_channel_short_protect(self, ip: str, channel: int, port: int = None) -> MK3Response:
+        """
+        Query short circuit protection status for a specific output channel.
+
+        Command: FF 55 02 17 <channel>
+        Response: Text like "Cmd:AmpShortCir :No short,Channel Output 1L"
+
+        Args:
+            ip: Target IP address
+            channel: Channel index (0x08-0x0F for channels 1L-4R)
+            port: Target port (default 52000)
+
+        Returns:
+            MK3Response with short circuit status
+        """
+        command = MK3ChannelCommand.QUERY_SHORT_PROTECT.value + bytes([channel])
+        response = self.send_command_simple(ip, command, port)
+
+        if response.success and response.raw_data:
+            # Try to parse text response
+            try:
+                text = response.raw_data.decode('utf-8', errors='ignore').strip()
+                has_short = "short" in text.lower() and "no short" not in text.lower()
+                response.parsed_value = {
+                    'has_short': has_short,
+                    'status_text': text,
+                    'channel': ChannelIndex.NAMES.get(channel, f"0x{channel:02X}")
+                }
+            except Exception:
+                response.parsed_value = {
+                    'has_short': False,
+                    'status_text': f"Raw: {response.raw_data.hex().upper()}",
+                    'channel': ChannelIndex.NAMES.get(channel, f"0x{channel:02X}")
+                }
+
+        return response
+
+    def query_channel_overtemp(self, ip: str, channel: int, port: int = None) -> MK3Response:
+        """
+        Query over-temperature status for a specific output channel.
+
+        Command: FF 55 02 18 <channel>
+        Response: Text like "Cmd:AmpOverTemp :Normal Temp,Channel Output 1L"
+
+        Args:
+            ip: Target IP address
+            channel: Channel index (0x08-0x0F for channels 1L-4R)
+            port: Target port (default 52000)
+
+        Returns:
+            MK3Response with thermal status
+        """
+        command = MK3ChannelCommand.QUERY_OVERTEMP.value + bytes([channel])
+        response = self.send_command_simple(ip, command, port)
+
+        if response.success and response.raw_data:
+            try:
+                text = response.raw_data.decode('utf-8', errors='ignore').strip()
+                is_overtemp = "over temp" in text.lower() or "overtemp" in text.lower()
+                is_normal = "normal" in text.lower()
+                response.parsed_value = {
+                    'has_overtemp': is_overtemp and not is_normal,
+                    'is_normal': is_normal,
+                    'status_text': text,
+                    'channel': ChannelIndex.NAMES.get(channel, f"0x{channel:02X}")
+                }
+            except Exception:
+                response.parsed_value = {
+                    'has_overtemp': False,
+                    'is_normal': True,
+                    'status_text': f"Raw: {response.raw_data.hex().upper()}",
+                    'channel': ChannelIndex.NAMES.get(channel, f"0x{channel:02X}")
+                }
+
+        return response
+
+    def query_channel_dsp_preset(self, ip: str, channel: int, port: int = None) -> MK3Response:
+        """
+        Query DSP EQ preset for a specific output channel.
+
+        Command: FF 55 02 16 <channel>
+        Response: Text like "Cmd:DSP_Preset:FLAT,Channel Output 1L"
+
+        Args:
+            ip: Target IP address
+            channel: Channel index (0x08-0x0F for channels 1L-4R)
+            port: Target port (default 52000)
+
+        Returns:
+            MK3Response with DSP preset information
+        """
+        command = MK3ChannelCommand.QUERY_DSP_PRESET.value + bytes([channel])
+        response = self.send_command_simple(ip, command, port)
+
+        if response.success and response.raw_data:
+            try:
+                text = response.raw_data.decode('utf-8', errors='ignore').strip()
+                # Extract preset name from response like "Cmd:DSP_Preset:FLAT,Channel..."
+                preset = "Unknown"
+                if ":" in text:
+                    parts = text.split(":")
+                    if len(parts) >= 2:
+                        preset_part = parts[-1].split(",")[0].strip()
+                        if preset_part:
+                            preset = preset_part
+                response.parsed_value = {
+                    'preset': preset,
+                    'status_text': text,
+                    'channel': ChannelIndex.NAMES.get(channel, f"0x{channel:02X}")
+                }
+            except Exception:
+                response.parsed_value = {
+                    'preset': "Unknown",
+                    'status_text': f"Raw: {response.raw_data.hex().upper()}",
+                    'channel': ChannelIndex.NAMES.get(channel, f"0x{channel:02X}")
+                }
+
+        return response
+
+    def query_all_channel_status(self, ip: str, num_channels: int = 8, port: int = None) -> List[MK3ChannelStatus]:
+        """
+        Query protection status for all output channels.
+
+        Args:
+            ip: Target IP address
+            num_channels: Number of channels to query (8 for DSP8-130, 2 for DSP2-xxx)
+            port: Target port (default 52000)
+
+        Returns:
+            List of MK3ChannelStatus for each channel
+        """
+        port = port or self.PORT
+        channels = []
+
+        channel_indices = ChannelIndex.ALL_8CH[:num_channels]
+
+        connected, error = self._connect(ip, port)
+        if not connected:
+            logger.error(f"Failed to connect for channel status: {error}")
+            return channels
+
+        try:
+            for ch_idx in channel_indices:
+                ch_name = ChannelIndex.NAMES.get(ch_idx, f"0x{ch_idx:02X}")
+                channel_status = MK3ChannelStatus(
+                    channel_index=ch_idx,
+                    channel_name=ch_name
+                )
+
+                # Query short protect
+                short_cmd = MK3ChannelCommand.QUERY_SHORT_PROTECT.value + bytes([ch_idx])
+                short_resp = self._send_command(short_cmd)
+                if short_resp.success and short_resp.raw_data:
+                    channel_status.raw_short_protect = short_resp.raw_data
+                    try:
+                        text = short_resp.raw_data.decode('utf-8', errors='ignore').strip()
+                        channel_status.has_short = "short" in text.lower() and "no short" not in text.lower()
+                        channel_status.short_status = "Short detected" if channel_status.has_short else "No short"
+                    except Exception:
+                        channel_status.short_status = f"Raw: {short_resp.raw_data.hex().upper()}"
+
+                # Query overtemp
+                temp_cmd = MK3ChannelCommand.QUERY_OVERTEMP.value + bytes([ch_idx])
+                temp_resp = self._send_command(temp_cmd)
+                if temp_resp.success and temp_resp.raw_data:
+                    channel_status.raw_overtemp = temp_resp.raw_data
+                    try:
+                        text = temp_resp.raw_data.decode('utf-8', errors='ignore').strip()
+                        channel_status.has_overtemp = "over temp" in text.lower() and "normal" not in text.lower()
+                        channel_status.overtemp_status = "Over Temp" if channel_status.has_overtemp else "Normal"
+                    except Exception:
+                        channel_status.overtemp_status = f"Raw: {temp_resp.raw_data.hex().upper()}"
+
+                # Query DSP preset
+                dsp_cmd = MK3ChannelCommand.QUERY_DSP_PRESET.value + bytes([ch_idx])
+                dsp_resp = self._send_command(dsp_cmd)
+                if dsp_resp.success and dsp_resp.raw_data:
+                    channel_status.raw_dsp_preset = dsp_resp.raw_data
+                    try:
+                        text = dsp_resp.raw_data.decode('utf-8', errors='ignore').strip()
+                        if ":" in text:
+                            parts = text.split(":")
+                            if len(parts) >= 2:
+                                channel_status.dsp_preset = parts[-1].split(",")[0].strip()
+                    except Exception:
+                        pass
+
+                channels.append(channel_status)
+                logger.debug(f"Channel {ch_name}: short={channel_status.short_status}, temp={channel_status.overtemp_status}, dsp={channel_status.dsp_preset}")
+
+        finally:
+            self._disconnect()
+
+        return channels
+
+    def send_group_command(self, ip: str, command: MK3GroupCommand, group: int, port: int = None) -> MK3Response:
+        """
+        Send a per-group command.
+
+        Args:
+            ip: Target IP address
+            command: MK3GroupCommand enum value
+            group: Group index (0=A, 1=B, etc.)
+            port: Target port (default 52000)
+
+        Returns:
+            MK3Response with results
+        """
+        cmd_bytes = command.value + bytes([group])
+        return self.send_command_simple(ip, cmd_bytes, port)
+
+    def send_global_command(self, ip: str, command: MK3Command, port: int = None) -> MK3Response:
+        """
+        Send a global command.
+
+        Args:
+            ip: Target IP address
+            command: MK3Command enum value
+            port: Target port (default 52000)
+
+        Returns:
+            MK3Response with results
+        """
+        return self.send_command_simple(ip, command.value, port)
+
+    def set_group_volume_direct(self, ip: str, group: int, db: int, port: int = None) -> MK3Response:
+        """
+        Set volume directly to a specific dB level for a group.
+
+        Volume range: -70dB to 0dB
+        Command format: FF 55 02 <vol_byte> <group>
+        where vol_byte = 0x71 (-70dB) to 0xB6 (0dB)
+
+        Args:
+            ip: Target IP address
+            group: Group index (0=A, 1=B, etc.)
+            db: Volume level in dB (-70 to 0)
+            port: Target port (default 52000)
+
+        Returns:
+            MK3Response with results
+        """
+        # Clamp dB to valid range
+        db = max(-70, min(0, db))
+        # Convert dB to command byte: -70dB = 0x71, 0dB = 0xB6
+        vol_byte = 0x71 + (db + 70)
+        command = bytes([0xFF, 0x55, 0x02, vol_byte, group])
+        return self.send_command_simple(ip, command, port)
+
+    def set_global_volume_direct(self, ip: str, db: int, port: int = None) -> MK3Response:
+        """
+        Set volume directly to a specific dB level for all groups.
+
+        Volume range: -70dB to 0dB
+        Command format: FF 55 01 <vol_byte>
+        where vol_byte = 0x71 (-70dB) to 0xB6 (0dB)
+
+        Args:
+            ip: Target IP address
+            db: Volume level in dB (-70 to 0)
+            port: Target port (default 52000)
+
+        Returns:
+            MK3Response with results
+        """
+        # Clamp dB to valid range
+        db = max(-70, min(0, db))
+        # Convert dB to command byte
+        vol_byte = 0x71 + (db + 70)
+        command = bytes([0xFF, 0x55, 0x01, vol_byte])
+        return self.send_command_simple(ip, command, port)

@@ -157,6 +157,7 @@ class MK3DiagnosticApp(ctk.CTk):
             ("discovery", "Discovery", "Find amplifiers on your network"),
             ("diagnostics", "Diagnostics", "View diagnostic results"),
             ("commands", "Quick Tests", "Run individual tests"),
+            ("control", "Control", "Send MK3 commands"),
             ("logs", "Logs", "View activity logs"),
         ]
 
@@ -239,8 +240,11 @@ class MK3DiagnosticApp(ctk.CTk):
         # Diagnostics View
         self.views['diagnostics'] = self._build_diagnostics_view()
 
-        # Commands View
+        # Commands View (Quick Tests)
         self.views['commands'] = self._build_commands_view()
+
+        # Control View (MK3 Commands)
+        self.views['control'] = self._build_control_view()
 
         # Logs View
         self.views['logs'] = self._build_logs_view()
@@ -901,6 +905,629 @@ class MK3DiagnosticApp(ctk.CTk):
         self.quick_test_log.insert("end", "or send TCP commands directly using the command input.\n\n")
 
         return view
+
+    def _build_control_view(self) -> ctk.CTkFrame:
+        """Build the MK3 control panel view."""
+        from ..network import (
+            MK3Command, MK3GroupCommand, MK3ProtocolTester,
+            get_hex_string, OutputGroup, ChannelIndex
+        )
+
+        view = ctk.CTkFrame(self.main_frame, fg_color="transparent")
+
+        # Create scrollable frame for content
+        scroll_frame = ctk.CTkScrollableFrame(view, fg_color="transparent")
+        scroll_frame.pack(fill="both", expand=True)
+
+        # Header
+        header = ctk.CTkFrame(scroll_frame, fg_color="transparent")
+        header.pack(fill="x", padx=30, pady=(30, 20))
+
+        ctk.CTkLabel(
+            header,
+            text="MK3 Control Panel",
+            font=ctk.CTkFont(family=self.FONT_FAMILY, size=28, weight="bold")
+        ).pack(side="left")
+
+        ctk.CTkLabel(
+            header,
+            text="Send commands to MK3 DSP amplifiers via port 52000",
+            font=ctk.CTkFont(family=self.FONT_FAMILY, size=14),
+            text_color=self.COLORS['text_secondary']
+        ).pack(side="right")
+
+        # Target IP and Model row
+        target_frame = ctk.CTkFrame(scroll_frame, fg_color=self.COLORS['card_bg'], corner_radius=12)
+        target_frame.pack(fill="x", padx=30, pady=(0, 15))
+
+        target_inner = ctk.CTkFrame(target_frame, fg_color="transparent")
+        target_inner.pack(fill="x", padx=20, pady=15)
+
+        ctk.CTkLabel(
+            target_inner,
+            text="Target IP:",
+            font=ctk.CTkFont(family=self.FONT_FAMILY, size=14, weight="bold")
+        ).pack(side="left")
+
+        self.control_ip_entry = ctk.CTkEntry(
+            target_inner,
+            width=180,
+            height=36,
+            font=ctk.CTkFont(family=self.FONT_FAMILY, size=14),
+            placeholder_text="e.g., 10.179.3.91"
+        )
+        self.control_ip_entry.pack(side="left", padx=(10, 25))
+
+        ctk.CTkLabel(
+            target_inner,
+            text="Model:",
+            font=ctk.CTkFont(family=self.FONT_FAMILY, size=14, weight="bold")
+        ).pack(side="left")
+
+        self.model_selector = ctk.CTkOptionMenu(
+            target_inner,
+            values=["DSP8-130 (8 groups)", "DSP2-150 (2 groups)", "DSP2-750 (2 groups)"],
+            width=180,
+            height=36,
+            font=ctk.CTkFont(family=self.FONT_FAMILY, size=13),
+            command=self._on_model_change
+        )
+        self.model_selector.set("DSP8-130 (8 groups)")
+        self.model_selector.pack(side="left", padx=(10, 25))
+
+        # Status indicator
+        self.control_status = ctk.CTkLabel(
+            target_inner,
+            text="Not connected",
+            font=ctk.CTkFont(family=self.FONT_FAMILY, size=13),
+            text_color=self.COLORS['text_secondary']
+        )
+        self.control_status.pack(side="right")
+
+        # Power Controls
+        power_frame = ctk.CTkFrame(scroll_frame, fg_color=self.COLORS['card_bg'], corner_radius=12)
+        power_frame.pack(fill="x", padx=30, pady=(0, 15))
+
+        power_header = ctk.CTkFrame(power_frame, fg_color="transparent")
+        power_header.pack(fill="x", padx=20, pady=(15, 10))
+
+        ctk.CTkLabel(
+            power_header,
+            text="Power Controls",
+            font=ctk.CTkFont(family=self.FONT_FAMILY, size=16, weight="bold")
+        ).pack(side="left")
+
+        power_btns = ctk.CTkFrame(power_frame, fg_color="transparent")
+        power_btns.pack(fill="x", padx=20, pady=(0, 15))
+
+        power_commands = [
+            ("Power ON", MK3Command.POWER_ON, self.COLORS['success']),
+            ("Power OFF", MK3Command.POWER_OFF, self.COLORS['error']),
+            ("Toggle", MK3Command.POWER_TOGGLE, self.COLORS['warning']),
+            ("Query Status", MK3Command.POWER_QUERY, self.COLORS['accent']),
+        ]
+
+        for name, cmd, color in power_commands:
+            btn = ctk.CTkButton(
+                power_btns,
+                text=name,
+                font=ctk.CTkFont(family=self.FONT_FAMILY, size=13, weight="bold"),
+                fg_color=color,
+                hover_color=color,
+                height=36,
+                width=110,
+                command=lambda c=cmd: self._send_mk3_global_command(c)
+            )
+            btn.pack(side="left", padx=(0, 10))
+
+        # Global Controls
+        global_frame = ctk.CTkFrame(scroll_frame, fg_color=self.COLORS['card_bg'], corner_radius=12)
+        global_frame.pack(fill="x", padx=30, pady=(0, 15))
+
+        global_header = ctk.CTkFrame(global_frame, fg_color="transparent")
+        global_header.pack(fill="x", padx=20, pady=(15, 10))
+
+        ctk.CTkLabel(
+            global_header,
+            text="Global Controls (All Groups)",
+            font=ctk.CTkFont(family=self.FONT_FAMILY, size=16, weight="bold")
+        ).pack(side="left")
+
+        # Volume row
+        vol_row = ctk.CTkFrame(global_frame, fg_color="transparent")
+        vol_row.pack(fill="x", padx=20, pady=(0, 10))
+
+        ctk.CTkLabel(
+            vol_row,
+            text="Volume:",
+            font=ctk.CTkFont(family=self.FONT_FAMILY, size=13),
+            width=70
+        ).pack(side="left")
+
+        vol_btns = [
+            ("Vol -", MK3Command.VOLUME_DOWN),
+            ("Vol +", MK3Command.VOLUME_UP),
+            ("-3dB", lambda: bytes([0xFF, 0x55, 0x01, 0x0F])),
+            ("+3dB", lambda: bytes([0xFF, 0x55, 0x01, 0x0E])),
+        ]
+
+        for name, cmd in vol_btns:
+            btn = ctk.CTkButton(
+                vol_row,
+                text=name,
+                font=ctk.CTkFont(family=self.FONT_FAMILY, size=12),
+                fg_color=self.COLORS['accent'],
+                hover_color=self.COLORS['accent_hover'],
+                height=32,
+                width=65,
+                command=lambda c=cmd: self._send_mk3_global_command(c) if hasattr(c, 'value') else self._send_mk3_raw_command(c())
+            )
+            btn.pack(side="left", padx=(0, 5))
+
+        # Direct volume slider
+        ctk.CTkLabel(vol_row, text="Direct:", font=ctk.CTkFont(family=self.FONT_FAMILY, size=12)).pack(side="left", padx=(15, 5))
+
+        self.global_vol_slider = ctk.CTkSlider(
+            vol_row,
+            from_=-70,
+            to=0,
+            number_of_steps=70,
+            width=150,
+            command=self._on_global_volume_change
+        )
+        self.global_vol_slider.set(-30)
+        self.global_vol_slider.pack(side="left", padx=(0, 5))
+
+        self.global_vol_label = ctk.CTkLabel(vol_row, text="-30 dB", font=ctk.CTkFont(family=self.FONT_FAMILY, size=12), width=50)
+        self.global_vol_label.pack(side="left")
+
+        ctk.CTkButton(
+            vol_row,
+            text="Set",
+            font=ctk.CTkFont(family=self.FONT_FAMILY, size=12, weight="bold"),
+            fg_color=self.COLORS['success'],
+            height=32,
+            width=50,
+            command=self._set_global_volume
+        ).pack(side="left", padx=(5, 0))
+
+        # Mute row
+        mute_row = ctk.CTkFrame(global_frame, fg_color="transparent")
+        mute_row.pack(fill="x", padx=20, pady=(0, 10))
+
+        ctk.CTkLabel(mute_row, text="Mute:", font=ctk.CTkFont(family=self.FONT_FAMILY, size=13), width=70).pack(side="left")
+
+        mute_btns = [
+            ("Mute ON", MK3Command.MUTE_ON, self.COLORS['error']),
+            ("Mute OFF", MK3Command.MUTE_OFF, self.COLORS['success']),
+            ("Toggle", MK3Command.MUTE_TOGGLE, self.COLORS['warning']),
+        ]
+
+        for name, cmd, color in mute_btns:
+            btn = ctk.CTkButton(
+                mute_row,
+                text=name,
+                font=ctk.CTkFont(family=self.FONT_FAMILY, size=12),
+                fg_color=color,
+                hover_color=color,
+                height=32,
+                width=80,
+                command=lambda c=cmd: self._send_mk3_global_command(c)
+            )
+            btn.pack(side="left", padx=(0, 5))
+
+        # Source row
+        source_row = ctk.CTkFrame(global_frame, fg_color="transparent")
+        source_row.pack(fill="x", padx=20, pady=(0, 15))
+
+        ctk.CTkLabel(source_row, text="Source:", font=ctk.CTkFont(family=self.FONT_FAMILY, size=13), width=70).pack(side="left")
+
+        source_btns = [
+            ("Input 1", MK3Command.INPUT_1),
+            ("Input 2", MK3Command.INPUT_2),
+            ("Input 3", MK3Command.INPUT_3),
+            ("Input 4", MK3Command.INPUT_4),
+        ]
+
+        for name, cmd in source_btns:
+            btn = ctk.CTkButton(
+                source_row,
+                text=name,
+                font=ctk.CTkFont(family=self.FONT_FAMILY, size=12),
+                fg_color="#9b59b6",
+                hover_color="#8e44ad",
+                height=32,
+                width=70,
+                command=lambda c=cmd: self._send_mk3_global_command(c)
+            )
+            btn.pack(side="left", padx=(0, 5))
+
+        # Per-Group Controls
+        group_frame = ctk.CTkFrame(scroll_frame, fg_color=self.COLORS['card_bg'], corner_radius=12)
+        group_frame.pack(fill="x", padx=30, pady=(0, 15))
+
+        group_header = ctk.CTkFrame(group_frame, fg_color="transparent")
+        group_header.pack(fill="x", padx=20, pady=(15, 10))
+
+        ctk.CTkLabel(
+            group_header,
+            text="Per-Group Controls",
+            font=ctk.CTkFont(family=self.FONT_FAMILY, size=16, weight="bold")
+        ).pack(side="left")
+
+        ctk.CTkLabel(group_header, text="Group:", font=ctk.CTkFont(family=self.FONT_FAMILY, size=13)).pack(side="left", padx=(20, 5))
+
+        self.group_selector = ctk.CTkOptionMenu(
+            group_header,
+            values=["A", "B", "C", "D", "E", "F", "G", "H"],
+            width=80,
+            height=32,
+            font=ctk.CTkFont(family=self.FONT_FAMILY, size=13)
+        )
+        self.group_selector.set("A")
+        self.group_selector.pack(side="left")
+
+        group_btns = ctk.CTkFrame(group_frame, fg_color="transparent")
+        group_btns.pack(fill="x", padx=20, pady=(0, 15))
+
+        group_commands = [
+            ("Power ON", MK3GroupCommand.POWER_ON, self.COLORS['success']),
+            ("Power OFF", MK3GroupCommand.POWER_OFF, self.COLORS['error']),
+            ("Vol +", MK3GroupCommand.VOLUME_UP, self.COLORS['accent']),
+            ("Vol -", MK3GroupCommand.VOLUME_DOWN, self.COLORS['accent']),
+            ("Mute ON", MK3GroupCommand.MUTE_ON, self.COLORS['warning']),
+            ("Mute OFF", MK3GroupCommand.MUTE_OFF, "#1abc9c"),
+        ]
+
+        for name, cmd, color in group_commands:
+            btn = ctk.CTkButton(
+                group_btns,
+                text=name,
+                font=ctk.CTkFont(family=self.FONT_FAMILY, size=12),
+                fg_color=color,
+                hover_color=color,
+                height=32,
+                width=75,
+                command=lambda c=cmd: self._send_mk3_group_command(c)
+            )
+            btn.pack(side="left", padx=(0, 5))
+
+        # Query source buttons for group
+        query_row = ctk.CTkFrame(group_frame, fg_color="transparent")
+        query_row.pack(fill="x", padx=20, pady=(0, 15))
+
+        ctk.CTkLabel(query_row, text="Set Source:", font=ctk.CTkFont(family=self.FONT_FAMILY, size=12)).pack(side="left", padx=(0, 10))
+
+        for i, cmd in enumerate([MK3GroupCommand.SOURCE_1, MK3GroupCommand.SOURCE_2, MK3GroupCommand.SOURCE_3, MK3GroupCommand.SOURCE_4]):
+            btn = ctk.CTkButton(
+                query_row,
+                text=f"Src {i+1}",
+                font=ctk.CTkFont(family=self.FONT_FAMILY, size=11),
+                fg_color="#9b59b6",
+                hover_color="#8e44ad",
+                height=28,
+                width=55,
+                command=lambda c=cmd: self._send_mk3_group_command(c)
+            )
+            btn.pack(side="left", padx=(0, 5))
+
+        # MK3 Protocol Status Check
+        status_frame = ctk.CTkFrame(scroll_frame, fg_color=self.COLORS['card_bg'], corner_radius=12)
+        status_frame.pack(fill="x", padx=30, pady=(0, 15))
+
+        status_header = ctk.CTkFrame(status_frame, fg_color="transparent")
+        status_header.pack(fill="x", padx=20, pady=(15, 10))
+
+        ctk.CTkLabel(
+            status_header,
+            text="Protection & Status Queries",
+            font=ctk.CTkFont(family=self.FONT_FAMILY, size=16, weight="bold")
+        ).pack(side="left")
+
+        status_btns = ctk.CTkFrame(status_frame, fg_color="transparent")
+        status_btns.pack(fill="x", padx=20, pady=(0, 15))
+
+        ctk.CTkButton(
+            status_btns,
+            text="Query All Channel Status",
+            font=ctk.CTkFont(family=self.FONT_FAMILY, size=13, weight="bold"),
+            fg_color=self.COLORS['accent'],
+            hover_color=self.COLORS['accent_hover'],
+            height=36,
+            width=180,
+            command=self._query_all_channel_status
+        ).pack(side="left", padx=(0, 10))
+
+        ctk.CTkButton(
+            status_btns,
+            text="Full MK3 Diagnostic",
+            font=ctk.CTkFont(family=self.FONT_FAMILY, size=13, weight="bold"),
+            fg_color="#e67e22",
+            hover_color="#d35400",
+            height=36,
+            width=150,
+            command=self._run_mk3_diagnostic
+        ).pack(side="left", padx=(0, 10))
+
+        # Response Log
+        log_header = ctk.CTkFrame(scroll_frame, fg_color="transparent")
+        log_header.pack(fill="x", padx=30, pady=(10, 10))
+
+        ctk.CTkLabel(
+            log_header,
+            text="Command Log",
+            font=ctk.CTkFont(family=self.FONT_FAMILY, size=16, weight="bold")
+        ).pack(side="left")
+
+        ctk.CTkButton(
+            log_header,
+            text="Clear",
+            font=ctk.CTkFont(family=self.FONT_FAMILY, size=12),
+            fg_color="transparent",
+            hover_color=self.COLORS['card_bg'],
+            border_width=1,
+            border_color=self.COLORS['text_secondary'],
+            height=28,
+            width=60,
+            command=self._clear_control_log
+        ).pack(side="right")
+
+        self.control_log = ctk.CTkTextbox(
+            scroll_frame,
+            font=ctk.CTkFont(family="Consolas", size=12),
+            fg_color=self.COLORS['card_bg'],
+            corner_radius=12,
+            height=200
+        )
+        self.control_log.pack(fill="x", padx=30, pady=(0, 20))
+
+        self.control_log.insert("end", "MK3 Control Panel Ready\n")
+        self.control_log.insert("end", "=" * 50 + "\n")
+        self.control_log.insert("end", "Enter a target IP and use the controls above.\n")
+        self.control_log.insert("end", "All commands use TCP port 52000 (MK3 binary protocol).\n\n")
+
+        # Store MK3 protocol tester
+        self._mk3_protocol = MK3ProtocolTester(timeout=3.0)
+
+        return view
+
+    def _on_model_change(self, value: str) -> None:
+        """Handle model selection change."""
+        if "8" in value:
+            self.group_selector.configure(values=["A", "B", "C", "D", "E", "F", "G", "H"])
+        else:
+            self.group_selector.configure(values=["A", "B"])
+            if self.group_selector.get() not in ["A", "B"]:
+                self.group_selector.set("A")
+
+    def _on_global_volume_change(self, value: float) -> None:
+        """Update volume label when slider changes."""
+        self.global_vol_label.configure(text=f"{int(value)} dB")
+
+    def _get_control_ip(self) -> Optional[str]:
+        """Get the target IP for control commands."""
+        ip = self.control_ip_entry.get().strip()
+        if not ip:
+            self.control_status.configure(text="Please enter a target IP", text_color=self.COLORS['error'])
+            return None
+        return ip
+
+    def _log_control(self, message: str) -> None:
+        """Log a message to the control log."""
+        from datetime import datetime
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        self.control_log.insert("end", f"[{timestamp}] {message}\n")
+        self.control_log.see("end")
+
+    def _send_mk3_global_command(self, cmd) -> None:
+        """Send a global MK3 command."""
+        from ..network import get_hex_string
+
+        ip = self._get_control_ip()
+        if not ip:
+            return
+
+        cmd_bytes = cmd.value if hasattr(cmd, 'value') else cmd
+        hex_str = get_hex_string(cmd_bytes)
+
+        self.control_status.configure(text=f"Sending {hex_str}...", text_color=self.COLORS['accent'])
+        self._log_control(f"TX> {hex_str}")
+
+        def run():
+            result = self._mk3_protocol.send_command_simple(ip, cmd_bytes)
+            if result.success:
+                response = result.raw_data.hex().upper() if result.raw_data else "OK"
+                self.after(0, lambda: self._log_control(f"RX< {response} ({result.response_time_ms:.1f}ms)"))
+                self.after(0, lambda: self.control_status.configure(text="Command sent OK", text_color=self.COLORS['success']))
+            else:
+                self.after(0, lambda: self._log_control(f"ERR: {result.error}"))
+                self.after(0, lambda: self.control_status.configure(text=f"Error: {result.error}", text_color=self.COLORS['error']))
+
+        threading.Thread(target=run, daemon=True).start()
+
+    def _send_mk3_raw_command(self, cmd_bytes: bytes) -> None:
+        """Send raw MK3 command bytes."""
+        from ..network import get_hex_string
+
+        ip = self._get_control_ip()
+        if not ip:
+            return
+
+        hex_str = get_hex_string(cmd_bytes)
+        self.control_status.configure(text=f"Sending {hex_str}...", text_color=self.COLORS['accent'])
+        self._log_control(f"TX> {hex_str}")
+
+        def run():
+            result = self._mk3_protocol.send_command_simple(ip, cmd_bytes)
+            if result.success:
+                response = result.raw_data.hex().upper() if result.raw_data else "OK"
+                self.after(0, lambda: self._log_control(f"RX< {response} ({result.response_time_ms:.1f}ms)"))
+                self.after(0, lambda: self.control_status.configure(text="Command sent OK", text_color=self.COLORS['success']))
+            else:
+                self.after(0, lambda: self._log_control(f"ERR: {result.error}"))
+                self.after(0, lambda: self.control_status.configure(text=f"Error: {result.error}", text_color=self.COLORS['error']))
+
+        threading.Thread(target=run, daemon=True).start()
+
+    def _send_mk3_group_command(self, cmd) -> None:
+        """Send a per-group MK3 command."""
+        from ..network import get_hex_string
+
+        ip = self._get_control_ip()
+        if not ip:
+            return
+
+        group_letter = self.group_selector.get()
+        group_idx = ord(group_letter) - ord('A')
+
+        cmd_bytes = cmd.value + bytes([group_idx])
+        hex_str = get_hex_string(cmd_bytes)
+
+        self.control_status.configure(text=f"Sending {hex_str} (Group {group_letter})...", text_color=self.COLORS['accent'])
+        self._log_control(f"TX> {hex_str} [Group {group_letter}]")
+
+        def run():
+            result = self._mk3_protocol.send_command_simple(ip, cmd_bytes)
+            if result.success:
+                response = result.raw_data.hex().upper() if result.raw_data else "OK"
+                self.after(0, lambda: self._log_control(f"RX< {response} ({result.response_time_ms:.1f}ms)"))
+                self.after(0, lambda: self.control_status.configure(text="Command sent OK", text_color=self.COLORS['success']))
+            else:
+                self.after(0, lambda: self._log_control(f"ERR: {result.error}"))
+                self.after(0, lambda: self.control_status.configure(text=f"Error: {result.error}", text_color=self.COLORS['error']))
+
+        threading.Thread(target=run, daemon=True).start()
+
+    def _set_global_volume(self) -> None:
+        """Set global volume to slider value."""
+        ip = self._get_control_ip()
+        if not ip:
+            return
+
+        db = int(self.global_vol_slider.get())
+        self._log_control(f"Setting global volume to {db} dB...")
+
+        def run():
+            result = self._mk3_protocol.set_global_volume_direct(ip, db)
+            if result.success:
+                self.after(0, lambda: self._log_control(f"Volume set to {db} dB"))
+                self.after(0, lambda: self.control_status.configure(text=f"Volume: {db} dB", text_color=self.COLORS['success']))
+            else:
+                self.after(0, lambda: self._log_control(f"ERR: {result.error}"))
+                self.after(0, lambda: self.control_status.configure(text=f"Error: {result.error}", text_color=self.COLORS['error']))
+
+        threading.Thread(target=run, daemon=True).start()
+
+    def _query_all_channel_status(self) -> None:
+        """Query protection status for all channels."""
+        ip = self._get_control_ip()
+        if not ip:
+            return
+
+        model = self.model_selector.get()
+        num_channels = 8 if "8" in model else 2
+
+        self.control_status.configure(text="Querying channel status...", text_color=self.COLORS['accent'])
+        self._log_control(f"Querying {num_channels} channels for protection status...")
+
+        def run():
+            channels = self._mk3_protocol.query_all_channel_status(ip, num_channels)
+
+            if channels:
+                self.after(0, lambda: self._log_control("\n--- CHANNEL STATUS ---"))
+                has_fault = False
+                for ch in channels:
+                    status = f"Ch {ch.channel_name}: "
+                    if ch.has_short:
+                        status += "SHORT! "
+                        has_fault = True
+                    else:
+                        status += "OK "
+                    if ch.has_overtemp:
+                        status += "OVERTEMP! "
+                        has_fault = True
+                    else:
+                        status += f"Temp={ch.overtemp_status} "
+                    if ch.dsp_preset:
+                        status += f"DSP={ch.dsp_preset}"
+                    self.after(0, lambda s=status: self._log_control(s))
+
+                if has_fault:
+                    self.after(0, lambda: self.control_status.configure(text="FAULTS DETECTED!", text_color=self.COLORS['error']))
+                else:
+                    self.after(0, lambda: self.control_status.configure(text="All channels OK", text_color=self.COLORS['success']))
+                self.after(0, lambda: self._log_control("--- END STATUS ---\n"))
+            else:
+                self.after(0, lambda: self._log_control("ERR: Could not query channels"))
+                self.after(0, lambda: self.control_status.configure(text="Query failed", text_color=self.COLORS['error']))
+
+        threading.Thread(target=run, daemon=True).start()
+
+    def _run_mk3_diagnostic(self) -> None:
+        """Run full MK3 protocol diagnostic."""
+        ip = self._get_control_ip()
+        if not ip:
+            return
+
+        model = self.model_selector.get()
+        num_groups = 8 if "8" in model else 2
+
+        self.control_status.configure(text="Running full diagnostic...", text_color=self.COLORS['accent'])
+        self._log_control(f"Running full MK3 diagnostic on {ip}...")
+
+        def run():
+            status = self._mk3_protocol.run_full_diagnostic(ip, num_groups)
+
+            self.after(0, lambda: self._log_control(f"\n{'='*50}"))
+            self.after(0, lambda: self._log_control(f"MK3 DIAGNOSTIC RESULTS - {ip}"))
+            self.after(0, lambda: self._log_control(f"{'='*50}"))
+
+            if not status.is_reachable:
+                self.after(0, lambda: self._log_control(f"ERROR: Port 52000 not reachable"))
+                self.after(0, lambda: self.control_status.configure(text="Port 52000 not reachable", text_color=self.COLORS['error']))
+                return
+
+            self.after(0, lambda: self._log_control(f"Connection: OK"))
+
+            if status.power_status:
+                pwr = "ON" if status.power_status.is_on else "OFF"
+                self.after(0, lambda: self._log_control(f"Power: {pwr}"))
+
+            if status.thermal_status:
+                self.after(0, lambda: self._log_control(f"Thermal: {status.thermal_status.state_name}"))
+
+            if status.global_protect:
+                gp = status.global_protect
+                self.after(0, lambda: self._log_control(f"Global Protect: {'FAULT' if gp.has_any_fault else 'OK'}"))
+                if gp.thermal_warning:
+                    self.after(0, lambda: self._log_control("  - THERMAL WARNING"))
+                if gp.protection_active:
+                    self.after(0, lambda: self._log_control("  - PROTECTION ACTIVE"))
+
+            self.after(0, lambda: self._log_control(f"\nGroups queried: {len(status.groups)}"))
+            for g in status.groups:
+                info = f"Group {g.group_name}: Vol={g.volume}, Mute={'ON' if g.mute else 'OFF'}, Src={g.source}"
+                if g.protect_status and g.protect_status.get('has_any_fault'):
+                    info += " [FAULT]"
+                self.after(0, lambda i=info: self._log_control(f"  {i}"))
+
+            if status.fault_summary:
+                self.after(0, lambda: self._log_control(f"\nFAULTS DETECTED:"))
+                for fault in status.fault_summary:
+                    self.after(0, lambda f=fault: self._log_control(f"  - {f}"))
+                self.after(0, lambda: self.control_status.configure(text="FAULTS DETECTED", text_color=self.COLORS['error']))
+            else:
+                self.after(0, lambda: self._log_control(f"\nNo faults detected"))
+                self.after(0, lambda: self.control_status.configure(text="Diagnostic OK", text_color=self.COLORS['success']))
+
+            self.after(0, lambda: self._log_control(f"{'='*50}\n"))
+
+        threading.Thread(target=run, daemon=True).start()
+
+    def _clear_control_log(self) -> None:
+        """Clear the control log."""
+        self.control_log.delete("1.0", "end")
+        self.control_log.insert("end", "Control log cleared.\n\n")
 
     def _build_logs_view(self) -> ctk.CTkFrame:
         """Build the logs view."""
