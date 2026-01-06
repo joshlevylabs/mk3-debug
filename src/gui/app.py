@@ -209,9 +209,23 @@ class MK3DiagnosticApp(ctk.CTk):
         )
         self.stat_selected.pack(anchor="w")
 
-        # Bottom section - version
+        # Bottom section - About button and version
         bottom_frame = ctk.CTkFrame(self.sidebar, fg_color="transparent")
         bottom_frame.pack(side="bottom", fill="x", pady=15)
+
+        # About button
+        about_btn = ctk.CTkButton(
+            bottom_frame,
+            text="ℹ️  About",
+            font=ctk.CTkFont(family=self.FONT_FAMILY, size=13),
+            fg_color="transparent",
+            hover_color=self.COLORS['sidebar_hover'],
+            anchor="w",
+            height=36,
+            corner_radius=8,
+            command=self._show_about_dialog
+        )
+        about_btn.pack(fill="x", padx=10, pady=(0, 10))
 
         from .. import __version__
         ctk.CTkLabel(
@@ -2960,6 +2974,139 @@ class MK3DiagnosticApp(ctk.CTk):
         self.after(0, lambda: self.log_viewer.add_log(
             entry.message, entry.level, entry.timestamp
         ))
+
+    def _show_about_dialog(self) -> None:
+        """Show the About dialog."""
+        from .. import __version__, __author__, __author_title__, __company__
+
+        # Create modal dialog
+        dialog = ctk.CTkToplevel(self)
+        dialog.title("About MK3 Diagnostic Tool")
+        dialog.geometry("480x520")
+        dialog.resizable(False, False)
+        dialog.transient(self)
+        dialog.grab_set()
+
+        # Center on parent
+        dialog.update_idletasks()
+        x = self.winfo_x() + (self.winfo_width() // 2) - (480 // 2)
+        y = self.winfo_y() + (self.winfo_height() // 2) - (520 // 2)
+        dialog.geometry(f"+{x}+{y}")
+
+        dialog.configure(fg_color=self.COLORS['card_bg'])
+
+        # Content frame
+        content = ctk.CTkFrame(dialog, fg_color="transparent")
+        content.pack(fill="both", expand=True, padx=30, pady=30)
+
+        # Logo
+        logo_path = get_resource_path("public/sonanceA.png")
+        if logo_path.exists():
+            logo_image = Image.open(logo_path)
+            logo_ctk = ctk.CTkImage(light_image=logo_image, dark_image=logo_image, size=(64, 64))
+            ctk.CTkLabel(content, image=logo_ctk, text="").pack(pady=(0, 15))
+            # Keep reference to prevent garbage collection
+            dialog._logo_ref = logo_ctk
+
+        # Title
+        ctk.CTkLabel(
+            content,
+            text="MK3 Network Diagnostic Tool",
+            font=ctk.CTkFont(family=self.FONT_FAMILY, size=22, weight="bold"),
+            text_color=self.COLORS['accent']
+        ).pack(pady=(0, 5))
+
+        # Version
+        ctk.CTkLabel(
+            content,
+            text=f"Version {__version__}",
+            font=ctk.CTkFont(family=self.FONT_FAMILY, size=14),
+            text_color=self.COLORS['text_secondary']
+        ).pack(pady=(0, 20))
+
+        # Separator
+        ctk.CTkFrame(content, fg_color=self.COLORS['sidebar_hover'], height=1).pack(fill="x", pady=10)
+
+        # Info section
+        info_frame = ctk.CTkFrame(content, fg_color=self.COLORS['sidebar_bg'], corner_radius=10)
+        info_frame.pack(fill="x", pady=15)
+
+        info_inner = ctk.CTkFrame(info_frame, fg_color="transparent")
+        info_inner.pack(fill="x", padx=20, pady=15)
+
+        info_items = [
+            ("Author", __author__),
+            ("Title", __author_title__),
+            ("Company", __company__),
+            ("Purpose", "Network diagnostics & control for Sonance DSP MK3 amplifiers"),
+            ("Protocol", "TCP Port 52000 (MK3 Binary Protocol)"),
+        ]
+
+        for label, value in info_items:
+            row = ctk.CTkFrame(info_inner, fg_color="transparent")
+            row.pack(fill="x", pady=4)
+
+            ctk.CTkLabel(
+                row,
+                text=f"{label}:",
+                font=ctk.CTkFont(family=self.FONT_FAMILY, size=12, weight="bold"),
+                text_color=self.COLORS['text_secondary'],
+                width=80,
+                anchor="w"
+            ).pack(side="left")
+
+            ctk.CTkLabel(
+                row,
+                text=value,
+                font=ctk.CTkFont(family=self.FONT_FAMILY, size=12),
+                text_color=self.COLORS['text_primary'],
+                anchor="w",
+                wraplength=280
+            ).pack(side="left", fill="x", expand=True)
+
+        # Separator
+        ctk.CTkFrame(content, fg_color=self.COLORS['sidebar_hover'], height=1).pack(fill="x", pady=10)
+
+        # Supported Models
+        ctk.CTkLabel(
+            content,
+            text="Supported Models",
+            font=ctk.CTkFont(family=self.FONT_FAMILY, size=13, weight="bold"),
+            text_color=self.COLORS['text_primary']
+        ).pack(anchor="w", pady=(5, 8))
+
+        models_frame = ctk.CTkFrame(content, fg_color="transparent")
+        models_frame.pack(fill="x")
+
+        models = ["DSP 8-130 MK3", "DSP 2-750 MK3", "DSP 2-150 MK3"]
+        for model in models:
+            ctk.CTkLabel(
+                models_frame,
+                text=f"  • {model}",
+                font=ctk.CTkFont(family=self.FONT_FAMILY, size=12),
+                text_color=self.COLORS['text_secondary']
+            ).pack(anchor="w")
+
+        # Copyright
+        ctk.CTkLabel(
+            content,
+            text="© 2024-2025 Sonance. All rights reserved.",
+            font=ctk.CTkFont(family=self.FONT_FAMILY, size=11),
+            text_color=self.COLORS['text_secondary']
+        ).pack(side="bottom", pady=(20, 0))
+
+        # Close button
+        ctk.CTkButton(
+            content,
+            text="Close",
+            font=ctk.CTkFont(family=self.FONT_FAMILY, size=13),
+            fg_color=self.COLORS['accent'],
+            hover_color=self.COLORS['accent_hover'],
+            width=100,
+            height=36,
+            corner_radius=8,
+            command=dialog.destroy
+        ).pack(side="bottom")
 
     def _on_close(self) -> None:
         """Handle window close."""
