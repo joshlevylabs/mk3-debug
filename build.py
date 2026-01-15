@@ -19,7 +19,19 @@ from pathlib import Path
 # Build configuration
 APP_NAME = "MK3 Diagnostic Tool"
 SCRIPT_PATH = "src/main.py"
-VERSION = "1.0.0"
+
+# Read version from package
+def get_version():
+    """Read version from src/__init__.py."""
+    init_path = Path("src/__init__.py")
+    if init_path.exists():
+        content = init_path.read_text()
+        for line in content.splitlines():
+            if line.startswith("__version__"):
+                return line.split("=")[1].strip().strip('"\'')
+    return "1.0.0"
+
+VERSION = get_version()
 
 # Platform detection
 IS_WINDOWS = platform.system() == "Windows"
@@ -100,8 +112,9 @@ def build():
     print(f"Building {APP_NAME} v{VERSION} for {platform_name}...")
     print(f"Data separator: '{DATA_SEPARATOR}'")
 
-    # Construct command
-    cmd = ["pyinstaller"] + get_pyinstaller_opts()
+    # Construct command - use sys.executable to ensure we use the same Python
+    # that's running this script, avoiding PATH issues
+    cmd = [sys.executable, "-m", "PyInstaller"] + get_pyinstaller_opts()
 
     if ICON_PATH and Path(ICON_PATH).exists():
         cmd.extend(["--icon", ICON_PATH])

@@ -1,0 +1,144 @@
+name: Build Release
+
+on:
+  # Trigger on version tags
+  push:
+    tags:
+      - 'v*'
+  # Allow manual trigger
+  workflow_dispatch:
+    inputs:
+      create_release:
+        description: 'Create a GitHub release'
+        required: false
+        default: 'false'
+        type: boolean
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: windows-latest
+            artifact_name: MK3_Diagnostic_Tool.exe
+            asset_name: MK3_Diagnostic_Tool_Windows.exe
+          - os: macos-latest
+            artifact_name: MK3_Diagnostic_Tool
+            asset_name: MK3_Diagnostic_Tool_macOS
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Build executable
+        run: python build.py --clean
+
+      - name: List dist contents
+        run: ls -la dist/
+        shell: bash
+
+      - name: Upload artifact (Windows)
+        if: matrix.os == 'windows-latest'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset_name }}
+          path: dist/${{ matrix.artifact_name }}
+          if-no-files-found: error
+
+      - name: Upload artifact (macOS)
+        if: matrix.os == 'macos-latest'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset_name }}
+          path: dist/${{ matrix.artifact_name }}
+          if-no-files-found: error
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v') || github.event.inputs.create_release == 'true'
+
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download Windows artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: MK3_Diagnostic_Tool_Windows.exe
+          path: release/
+
+      - name: Download macOS artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: MK3_Diagnostic_Tool_macOS
+          path: release/
+
+      - name: Rename artifacts for release
+        run: |
+          mv release/MK3_Diagnostic_Tool.exe release/MK3_Diagnostic_Tool_Windows.exe || true
+          mv release/MK3_Diagnostic_Tool release/MK3_Diagnostic_Tool_macOS || true
+          chmod +x release/MK3_Diagnostic_Tool_macOS || true
+          ls -la release/
+
+      - name: Create ZIP for macOS
+        run: |
+          cd release
+          zip MK3_Diagnostic_Tool_macOS.zip MK3_Diagnostic_Tool_macOS
+          rm MK3_Diagnostic_Tool_macOS
+
+      - name: Get version from tag
+        id: get_version
+        run: |
+          if [[ "${{ github.ref }}" == refs/tags/* ]]; then
+            echo "version=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+          else
+            echo "version=manual-build" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ steps.get_version.outputs.version }}
+          name: MK3 Diagnostic Tool ${{ steps.get_version.outputs.version }}
+          body: |
+            ## MK3 Amplifier Network Diagnostic Tool
+
+            ### Downloads
+            - **Windows**: `MK3_Diagnostic_Tool_Windows.exe` - Run directly
+            - **macOS**: `MK3_Diagnostic_Tool_macOS.zip` - Unzip and run (may need to right-click > Open on first launch)
+
+            ### Features
+            - Network discovery of MK3 amplifiers via mDNS/Bonjour
+            - TCP port 52000 control protocol support
+            - Real-time device status monitoring
+            - Group and channel control
+            - Comprehensive diagnostics dashboard
+
+            ### Supported Models
+            - DSP 8-130 MK3
+            - DSP 2-750 MK3
+            - DSP 2-150 MK3
+          draft: false
+          prerelease: false
+          files: |
+            release/MK3_Diagnostic_Tool_Windows.exe
+            release/MK3_Diagnostic_Tool_macOS.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
