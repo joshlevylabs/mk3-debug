@@ -79,7 +79,7 @@ def get_pyinstaller_opts():
         # Use --onedir on macOS so PyInstaller produces a .app bundle
         opts.extend([
             "--onedir",
-            "--osx-bundle-identifier", "com.sonance.mk3diagnostic",
+            "--osx-bundle-identifier", "com.joshlevylabs.mk3diagnostic",
         ])
     else:
         # Single file for Windows and Linux

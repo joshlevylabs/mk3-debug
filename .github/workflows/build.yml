@@ -90,7 +90,7 @@ jobs:
 
           # Sign all nested binaries and libraries first (deep sign)
           codesign --force --options runtime --deep \
-            --sign "Developer ID Application: Sonance (${{ secrets.APPLE_TEAM_ID }})" \
+            --sign "Developer ID Application: Josh Levy Labs Inc. (${{ secrets.APPLE_TEAM_ID }})" \
             --timestamp \
             "$APP_PATH"
 
