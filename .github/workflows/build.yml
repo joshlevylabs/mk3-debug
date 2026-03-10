@@ -99,6 +99,7 @@ jobs:
 
       - name: Notarize macOS app bundle
         if: matrix.os == 'macos-latest' && env.APPLE_CERTIFICATE_BASE64 != ''
+        continue-on-error: true
         env:
           APPLE_CERTIFICATE_BASE64: ${{ secrets.APPLE_CERTIFICATE_BASE64 }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
@@ -110,18 +111,18 @@ jobs:
           # Create a zip for notarization submission
           ditto -c -k --keepParent "$APP_PATH" dist/MK3_Diagnostic_Tool_notarize.zip
 
-          # Submit for notarization and wait
-          xcrun notarytool submit dist/MK3_Diagnostic_Tool_notarize.zip \
+          # Submit for notarization and wait (timeout after 30 min)
+          timeout 1800 xcrun notarytool submit dist/MK3_Diagnostic_Tool_notarize.zip \
             --apple-id "$APPLE_ID" \
             --team-id "$APPLE_TEAM_ID" \
             --password "$APPLE_APP_PASSWORD" \
-            --wait
+            --wait || echo "::warning::Notarization timed out or failed — app is signed but not notarized"
 
-          # Staple the notarization ticket to the .app bundle
-          xcrun stapler staple "$APP_PATH"
+          # Staple the notarization ticket (if available)
+          xcrun stapler staple "$APP_PATH" || echo "::warning::Stapling skipped — notarization may not have completed"
 
           # Clean up
-          rm dist/MK3_Diagnostic_Tool_notarize.zip
+          rm -f dist/MK3_Diagnostic_Tool_notarize.zip
       # --- End macOS Code Signing ---
 
       # macOS: zip the .app bundle for upload (preserves bundle structure)
