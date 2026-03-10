@@ -85,11 +85,18 @@ class MK3DiagnosticApp(ctk.CTk):
         self._is_scanning = False
         self._arp_cache: Dict[str, str] = {}  # IP -> MAC cache
 
+        # Update state
+        self._update_info = None
+        self._update_banner = None
+
         # Build UI
         self._build_ui()
 
         # Bind close event
         self.protocol("WM_DELETE_WINDOW", self._on_close)
+
+        # Check for updates in background
+        self._check_for_updates()
 
         logger.info("MK3 Diagnostic Tool started")
 
@@ -3110,9 +3117,26 @@ class MK3DiagnosticApp(ctk.CTk):
             text_color=self.COLORS['text_secondary']
         ).pack(side="bottom", pady=(20, 0))
 
+        # Button row
+        btn_row = ctk.CTkFrame(content, fg_color="transparent")
+        btn_row.pack(side="bottom", pady=(10, 0))
+
+        # Check for Updates button
+        ctk.CTkButton(
+            btn_row,
+            text="Check for Updates",
+            font=ctk.CTkFont(family=self.FONT_FAMILY, size=13),
+            fg_color=self.COLORS['success'],
+            hover_color="#219a52",
+            width=140,
+            height=36,
+            corner_radius=8,
+            command=lambda: (dialog.destroy(), self._show_update_dialog())
+        ).pack(side="left", padx=(0, 10))
+
         # Close button
         ctk.CTkButton(
-            content,
+            btn_row,
             text="Close",
             font=ctk.CTkFont(family=self.FONT_FAMILY, size=13),
             fg_color=self.COLORS['accent'],
@@ -3121,7 +3145,177 @@ class MK3DiagnosticApp(ctk.CTk):
             height=36,
             corner_radius=8,
             command=dialog.destroy
-        ).pack(side="bottom")
+        ).pack(side="left")
+
+    # ── Update system ─────────────────────────────────────────────────
+
+    def _check_for_updates(self) -> None:
+        """Check for updates in background on startup."""
+        from .. import __version__
+        from ..utils.updater import check_for_update_async
+
+        def on_result(update_info):
+            if update_info and update_info.is_newer:
+                self._update_info = update_info
+                self.after(0, self._show_update_banner)
+
+        check_for_update_async(__version__, on_result)
+
+    def _show_update_banner(self) -> None:
+        """Show an update available banner at the top of the main content area."""
+        if not self._update_info or self._update_banner:
+            return
+
+        info = self._update_info
+
+        self._update_banner = ctk.CTkFrame(
+            self.main_frame,
+            fg_color="#1a3a1a",
+            corner_radius=8,
+            border_width=1,
+            border_color=self.COLORS['success'],
+            height=44,
+        )
+        # Place at top of main frame, above all views
+        self._update_banner.pack(fill="x", padx=20, pady=(10, 0), before=list(self.views.values())[0])
+
+        inner = ctk.CTkFrame(self._update_banner, fg_color="transparent")
+        inner.pack(fill="x", padx=15, pady=8)
+
+        ctk.CTkLabel(
+            inner,
+            text=f"Update available: {info.latest_version}  (you have {info.current_version})",
+            font=ctk.CTkFont(family=self.FONT_FAMILY, size=13),
+            text_color=self.COLORS['success'],
+        ).pack(side="left")
+
+        ctk.CTkButton(
+            inner,
+            text="Download Update",
+            font=ctk.CTkFont(family=self.FONT_FAMILY, size=12, weight="bold"),
+            fg_color=self.COLORS['success'],
+            hover_color="#219a52",
+            height=28,
+            width=130,
+            corner_radius=6,
+            command=self._download_update,
+        ).pack(side="left", padx=(15, 0))
+
+        ctk.CTkButton(
+            inner,
+            text="Dismiss",
+            font=ctk.CTkFont(family=self.FONT_FAMILY, size=11),
+            fg_color="transparent",
+            hover_color="#2a4a2a",
+            text_color=self.COLORS['text_secondary'],
+            height=28,
+            width=70,
+            corner_radius=6,
+            command=self._dismiss_update_banner,
+        ).pack(side="right")
+
+    def _download_update(self) -> None:
+        """Open the download page for the update."""
+        if self._update_info:
+            from ..utils.updater import open_download
+            open_download(self._update_info)
+
+    def _dismiss_update_banner(self) -> None:
+        """Dismiss the update banner."""
+        if self._update_banner:
+            self._update_banner.destroy()
+            self._update_banner = None
+
+    def _show_update_dialog(self) -> None:
+        """Show a dialog with update check results (for manual check)."""
+        from .. import __version__
+        from ..utils.updater import check_for_update
+
+        dialog = ctk.CTkToplevel(self)
+        dialog.title("Check for Updates")
+        dialog.geometry("420x220")
+        dialog.resizable(False, False)
+        dialog.transient(self)
+        dialog.grab_set()
+        dialog.configure(fg_color=self.COLORS['card_bg'])
+
+        dialog.update_idletasks()
+        x = self.winfo_x() + (self.winfo_width() - 420) // 2
+        y = self.winfo_y() + (self.winfo_height() - 220) // 2
+        dialog.geometry(f"+{x}+{y}")
+
+        content = ctk.CTkFrame(dialog, fg_color="transparent")
+        content.pack(fill="both", expand=True, padx=25, pady=25)
+
+        status_label = ctk.CTkLabel(
+            content,
+            text="Checking for updates...",
+            font=ctk.CTkFont(family=self.FONT_FAMILY, size=15),
+            text_color=self.COLORS['text_primary'],
+        )
+        status_label.pack(pady=(10, 5))
+
+        detail_label = ctk.CTkLabel(
+            content,
+            text="",
+            font=ctk.CTkFont(family=self.FONT_FAMILY, size=12),
+            text_color=self.COLORS['text_secondary'],
+        )
+        detail_label.pack(pady=(0, 15))
+
+        btn_frame = ctk.CTkFrame(content, fg_color="transparent")
+        btn_frame.pack(pady=(10, 0))
+
+        def do_check():
+            info = check_for_update(__version__)
+            if info and info.is_newer:
+                self._update_info = info
+                dialog.after(0, lambda: status_label.configure(
+                    text=f"Update available: {info.latest_version}",
+                    text_color=self.COLORS['success'],
+                ))
+                dialog.after(0, lambda: detail_label.configure(
+                    text=f"You have {info.current_version}",
+                ))
+                dialog.after(0, lambda: ctk.CTkButton(
+                    btn_frame,
+                    text="Download Update",
+                    font=ctk.CTkFont(family=self.FONT_FAMILY, size=13, weight="bold"),
+                    fg_color=self.COLORS['success'],
+                    hover_color="#219a52",
+                    height=36,
+                    width=150,
+                    command=lambda: (self._download_update(), dialog.destroy()),
+                ).pack(side="left", padx=5))
+            elif info:
+                dialog.after(0, lambda: status_label.configure(
+                    text="You're up to date!",
+                    text_color=self.COLORS['success'],
+                ))
+                dialog.after(0, lambda: detail_label.configure(
+                    text=f"Version {__version__} is the latest",
+                ))
+            else:
+                dialog.after(0, lambda: status_label.configure(
+                    text="Could not check for updates",
+                    text_color=self.COLORS['warning'],
+                ))
+                dialog.after(0, lambda: detail_label.configure(
+                    text="Check your internet connection",
+                ))
+
+            dialog.after(0, lambda: ctk.CTkButton(
+                btn_frame,
+                text="Close",
+                font=ctk.CTkFont(family=self.FONT_FAMILY, size=13),
+                fg_color=self.COLORS['accent'],
+                hover_color=self.COLORS['accent_hover'],
+                height=36,
+                width=80,
+                command=dialog.destroy,
+            ).pack(side="left", padx=5))
+
+        threading.Thread(target=do_check, daemon=True).start()
 
     def _on_close(self) -> None:
         """Handle window close."""
