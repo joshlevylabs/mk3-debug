@@ -6,6 +6,7 @@ from .dns_hostname import DNSHostnameFrame
 from .commands import CommandsFrame
 from .diagnostics import DiagnosticsFrame
 from .logs import LogsFrame
+from .verification import VerificationFrame
 
 __all__ = [
     "DiscoveryFrame",
@@ -14,4 +15,5 @@ __all__ = [
     "CommandsFrame",
     "DiagnosticsFrame",
     "LogsFrame",
+    "VerificationFrame",
 ]

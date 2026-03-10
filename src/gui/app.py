@@ -155,6 +155,7 @@ class MK3DiagnosticApp(ctk.CTk):
 
         nav_items = [
             ("discovery", "Discovery", "Find amplifiers on your network"),
+            ("verification", "Verification", "Firmware verification sweep"),
             ("diagnostics", "Diagnostics", "View diagnostic results"),
             ("commands", "Quick Tests", "Run individual tests"),
             ("control", "Control", "Send MK3 commands"),
@@ -250,6 +251,9 @@ class MK3DiagnosticApp(ctk.CTk):
 
         # Discovery View
         self.views['discovery'] = self._build_discovery_view()
+
+        # Verification View
+        self.views['verification'] = self._build_verification_view()
 
         # Diagnostics View
         self.views['diagnostics'] = self._build_diagnostics_view()
@@ -595,6 +599,17 @@ class MK3DiagnosticApp(ctk.CTk):
         """Hide the scanning placeholder."""
         if hasattr(self, '_scanning_placeholder') and self._scanning_placeholder.winfo_exists():
             self._scanning_placeholder.destroy()
+
+    def _build_verification_view(self) -> ctk.CTkFrame:
+        """Build the firmware verification sweep view."""
+        from .frames.verification import VerificationFrame
+
+        view = VerificationFrame(
+            self.main_frame,
+            config=self.config,
+            get_target_ip=lambda: self.quick_test_ip_entry.get().strip() if hasattr(self, 'quick_test_ip_entry') else None
+        )
+        return view
 
     def _build_diagnostics_view(self) -> ctk.CTkFrame:
         """Build the diagnostics results view."""
