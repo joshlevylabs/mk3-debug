@@ -25,6 +25,9 @@ jobs:
           - os: macos-latest
             artifact_name: MK3_Diagnostic_Tool
             asset_name: MK3_Diagnostic_Tool_macOS
+          - os: ubuntu-latest
+            artifact_name: MK3_Diagnostic_Tool
+            asset_name: MK3_Diagnostic_Tool_Linux
 
     runs-on: ${{ matrix.os }}
 
@@ -50,6 +53,73 @@ jobs:
         run: ls -la dist/
         shell: bash
 
+      # --- macOS Code Signing & Notarization ---
+      - name: Import Apple certificate
+        if: matrix.os == 'macos-latest'
+        env:
+          APPLE_CERTIFICATE_BASE64: ${{ secrets.APPLE_CERTIFICATE_BASE64 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+        run: |
+          # Create a temporary keychain
+          KEYCHAIN_PATH=$RUNNER_TEMP/app-signing.keychain-db
+          KEYCHAIN_PASSWORD=$(openssl rand -base64 32)
+
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+
+          # Import certificate
+          echo "$APPLE_CERTIFICATE_BASE64" | base64 --decode > $RUNNER_TEMP/certificate.p12
+          security import $RUNNER_TEMP/certificate.p12 \
+            -P "$APPLE_CERTIFICATE_PASSWORD" \
+            -A \
+            -t cert \
+            -f pkcs12 \
+            -k "$KEYCHAIN_PATH"
+
+          security set-key-partition-list -S apple-tool:,apple: -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security list-keychain -d user -s "$KEYCHAIN_PATH"
+
+      - name: Sign macOS binary
+        if: matrix.os == 'macos-latest' && env.APPLE_CERTIFICATE_BASE64 != ''
+        env:
+          APPLE_CERTIFICATE_BASE64: ${{ secrets.APPLE_CERTIFICATE_BASE64 }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          # Sign the executable
+          codesign --force --options runtime \
+            --sign "Developer ID Application: Sonance (${{ secrets.APPLE_TEAM_ID }})" \
+            --timestamp \
+            dist/MK3_Diagnostic_Tool
+
+          # Verify the signature
+          codesign --verify --verbose=2 dist/MK3_Diagnostic_Tool
+
+      - name: Notarize macOS binary
+        if: matrix.os == 'macos-latest' && env.APPLE_CERTIFICATE_BASE64 != ''
+        env:
+          APPLE_CERTIFICATE_BASE64: ${{ secrets.APPLE_CERTIFICATE_BASE64 }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+        run: |
+          # Create a zip for notarization
+          ditto -c -k --keepParent dist/MK3_Diagnostic_Tool dist/MK3_Diagnostic_Tool_notarize.zip
+
+          # Submit for notarization
+          xcrun notarytool submit dist/MK3_Diagnostic_Tool_notarize.zip \
+            --apple-id "$APPLE_ID" \
+            --team-id "$APPLE_TEAM_ID" \
+            --password "$APPLE_APP_PASSWORD" \
+            --wait
+
+          # Staple the notarization ticket
+          xcrun stapler staple dist/MK3_Diagnostic_Tool
+
+          # Clean up
+          rm dist/MK3_Diagnostic_Tool_notarize.zip
+      # --- End macOS Code Signing ---
+
       - name: Upload artifact (Windows)
         if: matrix.os == 'windows-latest'
         uses: actions/upload-artifact@v4
@@ -60,6 +130,14 @@ jobs:
 
       - name: Upload artifact (macOS)
         if: matrix.os == 'macos-latest'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset_name }}
+          path: dist/${{ matrix.artifact_name }}
+          if-no-files-found: error
+
+      - name: Upload artifact (Linux)
+        if: matrix.os == 'ubuntu-latest'
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.asset_name }}
@@ -90,18 +168,29 @@ jobs:
           name: MK3_Diagnostic_Tool_macOS
           path: release/
 
-      - name: Rename artifacts for release
-        run: |
-          mv release/MK3_Diagnostic_Tool.exe release/MK3_Diagnostic_Tool_Windows.exe || true
-          mv release/MK3_Diagnostic_Tool release/MK3_Diagnostic_Tool_macOS || true
-          chmod +x release/MK3_Diagnostic_Tool_macOS || true
-          ls -la release/
+      - name: Download Linux artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: MK3_Diagnostic_Tool_Linux
+          path: release/
 
-      - name: Create ZIP for macOS
+      - name: Prepare release artifacts
         run: |
+          # Windows - rename
+          mv release/MK3_Diagnostic_Tool.exe release/MK3_Diagnostic_Tool_Windows.exe || true
+
+          # macOS - zip it up
           cd release
-          zip MK3_Diagnostic_Tool_macOS.zip MK3_Diagnostic_Tool_macOS
-          rm MK3_Diagnostic_Tool_macOS
+          chmod +x MK3_Diagnostic_Tool || true
+          zip MK3_Diagnostic_Tool_macOS.zip MK3_Diagnostic_Tool
+          rm MK3_Diagnostic_Tool
+          cd ..
+
+          # Linux - rename and make executable
+          mv release/MK3_Diagnostic_Tool release/MK3_Diagnostic_Tool_Linux || true
+          chmod +x release/MK3_Diagnostic_Tool_Linux || true
+
+          ls -la release/
 
       - name: Get version from tag
         id: get_version
@@ -121,15 +210,17 @@ jobs:
             ## MK3 Amplifier Network Diagnostic Tool
 
             ### Downloads
-            - **Windows**: `MK3_Diagnostic_Tool_Windows.exe` - Run directly
-            - **macOS**: `MK3_Diagnostic_Tool_macOS.zip` - Unzip and run (may need to right-click > Open on first launch)
+            | Platform | File | Notes |
+            |----------|------|-------|
+            | **Windows** | `MK3_Diagnostic_Tool_Windows.exe` | Run directly. If SmartScreen warns, click "More info" > "Run anyway" |
+            | **macOS** | `MK3_Diagnostic_Tool_macOS.zip` | Unzip and double-click to run |
+            | **Linux** | `MK3_Diagnostic_Tool_Linux` | `chmod +x` then run from terminal |
 
-            ### Features
-            - Network discovery of MK3 amplifiers via mDNS/Bonjour
-            - TCP port 52000 control protocol support
-            - Real-time device status monitoring
-            - Group and channel control
-            - Comprehensive diagnostics dashboard
+            ### What This Tool Does
+            - Discovers MK3 amplifiers on your network via mDNS/Bonjour
+            - Tests TCP connectivity to amplifier control port (52000)
+            - Sends diagnostic commands and displays real-time device status
+            - Generates diagnostic reports to help troubleshoot network issues
 
             ### Supported Models
             - DSP 8-130 MK3
@@ -140,5 +231,6 @@ jobs:
           files: |
             release/MK3_Diagnostic_Tool_Windows.exe
             release/MK3_Diagnostic_Tool_macOS.zip
+            release/MK3_Diagnostic_Tool_Linux
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

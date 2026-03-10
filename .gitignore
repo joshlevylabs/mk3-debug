@@ -1,0 +1,26 @@
+# Secrets & certificates
+*.key
+*.p12
+*.pem
+*.cer
+*.csr
+certificate_base64.txt
+
+# Build artifacts
+build/
+dist/
+*.spec
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# OS files
+.DS_Store
+Thumbs.db
+nul
+
+# IDE
+.vscode/
+.idea/
