@@ -21,8 +21,8 @@ A standalone diagnostic utility for troubleshooting Sonance MK3 amplifier networ
 
 ### macOS
 1. Download `MK3_Diagnostic_Tool_macOS.zip` from the [Releases page](https://github.com/joshlevylabs/mk3-debug/releases/latest)
-2. Unzip the file
-3. Double-click `MK3_Diagnostic_Tool` to launch
+2. Double-click the zip to extract — you'll get **MK3_Diagnostic_Tool.app**
+3. Drag it to your Applications folder (optional) or double-click to run
 4. If macOS blocks the app: go to **System Settings > Privacy & Security** and click **"Open Anyway"**
 
 ### Linux

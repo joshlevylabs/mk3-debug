@@ -23,7 +23,7 @@ jobs:
             artifact_name: MK3_Diagnostic_Tool.exe
             asset_name: MK3_Diagnostic_Tool_Windows.exe
           - os: macos-latest
-            artifact_name: MK3_Diagnostic_Tool
+            artifact_name: MK3_Diagnostic_Tool.app
             asset_name: MK3_Diagnostic_Tool_macOS
           - os: ubuntu-latest
             artifact_name: MK3_Diagnostic_Tool
@@ -50,7 +50,7 @@ jobs:
         run: python build.py --clean
 
       - name: List dist contents
-        run: ls -la dist/
+        run: ls -laR dist/
         shell: bash
 
       # --- macOS Code Signing & Notarization ---
@@ -80,22 +80,24 @@ jobs:
           security set-key-partition-list -S apple-tool:,apple: -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
           security list-keychain -d user -s "$KEYCHAIN_PATH"
 
-      - name: Sign macOS binary
+      - name: Sign macOS app bundle
         if: matrix.os == 'macos-latest' && env.APPLE_CERTIFICATE_BASE64 != ''
         env:
           APPLE_CERTIFICATE_BASE64: ${{ secrets.APPLE_CERTIFICATE_BASE64 }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
-          # Sign the executable
-          codesign --force --options runtime \
+          APP_PATH="dist/MK3_Diagnostic_Tool.app"
+
+          # Sign all nested binaries and libraries first (deep sign)
+          codesign --force --options runtime --deep \
             --sign "Developer ID Application: Sonance (${{ secrets.APPLE_TEAM_ID }})" \
             --timestamp \
-            dist/MK3_Diagnostic_Tool
+            "$APP_PATH"
 
           # Verify the signature
-          codesign --verify --verbose=2 dist/MK3_Diagnostic_Tool
+          codesign --verify --verbose=2 --deep "$APP_PATH"
 
-      - name: Notarize macOS binary
+      - name: Notarize macOS app bundle
         if: matrix.os == 'macos-latest' && env.APPLE_CERTIFICATE_BASE64 != ''
         env:
           APPLE_CERTIFICATE_BASE64: ${{ secrets.APPLE_CERTIFICATE_BASE64 }}
@@ -103,22 +105,32 @@ jobs:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
         run: |
-          # Create a zip for notarization
-          ditto -c -k --keepParent dist/MK3_Diagnostic_Tool dist/MK3_Diagnostic_Tool_notarize.zip
+          APP_PATH="dist/MK3_Diagnostic_Tool.app"
 
-          # Submit for notarization
+          # Create a zip for notarization submission
+          ditto -c -k --keepParent "$APP_PATH" dist/MK3_Diagnostic_Tool_notarize.zip
+
+          # Submit for notarization and wait
           xcrun notarytool submit dist/MK3_Diagnostic_Tool_notarize.zip \
             --apple-id "$APPLE_ID" \
             --team-id "$APPLE_TEAM_ID" \
             --password "$APPLE_APP_PASSWORD" \
             --wait
 
-          # Staple the notarization ticket
-          xcrun stapler staple dist/MK3_Diagnostic_Tool
+          # Staple the notarization ticket to the .app bundle
+          xcrun stapler staple "$APP_PATH"
 
           # Clean up
           rm dist/MK3_Diagnostic_Tool_notarize.zip
       # --- End macOS Code Signing ---
+
+      # macOS: zip the .app bundle for upload (preserves bundle structure)
+      - name: Package macOS app
+        if: matrix.os == 'macos-latest'
+        run: |
+          cd dist
+          zip -r -y MK3_Diagnostic_Tool_macOS.zip MK3_Diagnostic_Tool.app
+          cd ..
 
       - name: Upload artifact (Windows)
         if: matrix.os == 'windows-latest'
@@ -133,7 +145,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.asset_name }}
-          path: dist/${{ matrix.artifact_name }}
+          path: dist/MK3_Diagnostic_Tool_macOS.zip
           if-no-files-found: error
 
       - name: Upload artifact (Linux)
@@ -179,12 +191,9 @@ jobs:
           # Windows - rename
           mv release/MK3_Diagnostic_Tool.exe release/MK3_Diagnostic_Tool_Windows.exe || true
 
-          # macOS - zip it up
-          cd release
-          chmod +x MK3_Diagnostic_Tool || true
-          zip MK3_Diagnostic_Tool_macOS.zip MK3_Diagnostic_Tool
-          rm MK3_Diagnostic_Tool
-          cd ..
+          # macOS - already zipped as .app bundle
+          # The zip was created in the build step, just verify it's here
+          ls -la release/MK3_Diagnostic_Tool_macOS.zip
 
           # Linux - rename and make executable
           mv release/MK3_Diagnostic_Tool release/MK3_Diagnostic_Tool_Linux || true
@@ -213,7 +222,7 @@ jobs:
             | Platform | File | Notes |
             |----------|------|-------|
             | **Windows** | `MK3_Diagnostic_Tool_Windows.exe` | Run directly. If SmartScreen warns, click "More info" > "Run anyway" |
-            | **macOS** | `MK3_Diagnostic_Tool_macOS.zip` | Unzip and double-click to run |
+            | **macOS** | `MK3_Diagnostic_Tool_macOS.zip` | Unzip to get `MK3 Diagnostic Tool.app` — double-click to run |
             | **Linux** | `MK3_Diagnostic_Tool_Linux` | `chmod +x` then run from terminal |
 
             ### What This Tool Does

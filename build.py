@@ -56,7 +56,6 @@ def get_pyinstaller_opts():
     """Get PyInstaller options for current platform."""
     opts = [
         "--name", APP_NAME.replace(" ", "_"),
-        "--onefile",           # Single executable
         "--windowed",          # No console window (GUI app)
         "--clean",             # Clean build cache
         "--noconfirm",         # Overwrite without asking
@@ -76,11 +75,15 @@ def get_pyinstaller_opts():
         "--collect-all", "customtkinter",
     ]
 
-    # macOS-specific options
     if IS_MACOS:
+        # Use --onedir on macOS so PyInstaller produces a .app bundle
         opts.extend([
+            "--onedir",
             "--osx-bundle-identifier", "com.sonance.mk3diagnostic",
         ])
+    else:
+        # Single file for Windows and Linux
+        opts.append("--onefile")
 
     return opts
 
