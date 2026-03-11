@@ -393,18 +393,28 @@ def _extract_device_name(html: str) -> str:
     - Device Name: Living Room Amp
     - <h1>Living Room DSP8-130</h1>
     - hostname=LivingRoom
-    - name="My Amp"
     """
+    # Skip HTML meta/link tags before searching — they produce false positives
+    # like <meta name="viewport"> matching as device name "viewport"
+    cleaned = re.sub(r"<(?:meta|link|script|style)[^>]*>", "", html, flags=re.IGNORECASE)
+
     patterns = [
-        r"(?:device\s*name|amp\s*name|host\s*name|name)\s*[=:]\s*['\"]?([A-Za-z0-9][\w\s\-\.]{2,30})",
+        # Explicit device/amp/host name labels
+        r"(?:device\s*name|amp\s*name|host\s*name)\s*[=:]\s*['\"]?([A-Za-z0-9][\w\s\-\.]{2,30})",
         r"<h1[^>]*>\s*(.{3,40}?)\s*</h1>",
     ]
+    # Common HTML attribute values to exclude
+    _EXCLUDED_NAMES = {
+        "home", "index", "status", "landing", "page",
+        "viewport", "description", "keywords", "author",
+        "generator", "robots", "content-type", "charset",
+        "text", "submit", "button", "hidden", "checkbox",
+    }
     for pat in patterns:
-        match = re.search(pat, html, re.IGNORECASE)
+        match = re.search(pat, cleaned, re.IGNORECASE)
         if match:
             name = match.group(1).strip().strip("'\"")
-            # Skip generic page titles
-            if name.lower() not in ("home", "index", "status", "landing", "page"):
+            if name.lower() not in _EXCLUDED_NAMES:
                 return name
     return ""
 

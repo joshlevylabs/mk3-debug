@@ -578,8 +578,8 @@ class FirmwareVersionCard(ctk.CTkFrame):
 
     def __init__(self, master, firmware: FirmwareInfo,
                  on_install: Optional[Callable] = None, **kwargs):
-        super().__init__(master, fg_color="#0f172a", corner_radius=8,
-                         border_width=1, border_color="#2a2a4a", **kwargs)
+        super().__init__(master, fg_color="#1e293b", corner_radius=8,
+                         border_width=1, border_color="#334155", height=60, **kwargs)
         self._firmware = firmware
         self._on_install = on_install
         self._build_ui()
@@ -1020,9 +1020,9 @@ class VerificationFrame(ctk.CTkFrame):
 
         # Firmware versions list (scrollable, max height)
         self._fw_scroll = ctk.CTkScrollableFrame(
-            inner, fg_color="transparent", height=180,
+            inner, fg_color="#0f172a", height=200,
         )
-        self._fw_scroll.pack(fill="x", pady=(8, 0))
+        self._fw_scroll.pack(fill="x", expand=True, pady=(8, 0))
 
         self._fw_placeholder = ctk.CTkLabel(
             self._fw_scroll,
@@ -1074,7 +1074,10 @@ class VerificationFrame(ctk.CTkFrame):
                 self._fw_scroll, fw,
                 on_install=self._on_install_firmware if self._device_rows else None,
             )
-            card.pack(fill="x", pady=2)
+            card.pack(fill="x", padx=4, pady=4)
+
+        # Force scroll frame to update its canvas after adding children
+        self._fw_scroll.update_idletasks()
 
     # ── 5. Test verification matrix ────────────────────────────────────
 
