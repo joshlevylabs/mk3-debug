@@ -6,11 +6,18 @@ import platform
 import re
 import threading
 from typing import List, Dict, Optional, Callable, Tuple
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import ipaddress
 
 from ..utils import get_logger
+from .mk3_identifier import (
+    identify_mk3,
+    check_mac_prefix,
+    MK3DeviceInfo,
+    MK3_CONTROL_PORT,
+    KNOWN_MAC_PREFIXES,
+)
 
 logger = get_logger(__name__)
 
@@ -22,13 +29,15 @@ class DiscoveredDevice:
     hostname: Optional[str] = None
     mac_address: Optional[str] = None
     vendor: Optional[str] = None
-    open_ports: List[int] = None
+    open_ports: List[int] = field(default_factory=list)
     response_time_ms: Optional[float] = None
     is_mk3_candidate: bool = False
 
-    def __post_init__(self):
-        if self.open_ports is None:
-            self.open_ports = []
+    # MK3-specific fields (populated by identify_mk3)
+    mk3_info: Optional[MK3DeviceInfo] = None
+    device_name: str = ""
+    model: str = ""
+    firmware_version: str = ""
 
 
 class NetworkDiscovery:
@@ -36,10 +45,8 @@ class NetworkDiscovery:
     Discovers devices on the network using various methods.
     """
 
-    # Known Sonance MAC prefixes (if any - placeholder)
-    SONANCE_MAC_PREFIXES = [
-        # Add known Sonance OUI prefixes here
-    ]
+    # Known MAC prefixes for Sonance MK3 amps (Microchip ethernet controllers)
+    SONANCE_MAC_PREFIXES = [p.upper().replace(":", "-") for p in KNOWN_MAC_PREFIXES]
 
     def __init__(self, timeout: float = 2.0):
         self.timeout = timeout
@@ -253,6 +260,7 @@ class NetworkDiscovery:
     def enrich_device(self, device: DiscoveredDevice) -> DiscoveredDevice:
         """
         Enrich a device with additional information (hostname, MAC, etc.).
+        Runs MK3 identification to detect firmware version and model.
         """
         # Try to resolve hostname
         if not device.hostname:
@@ -266,27 +274,43 @@ class NetworkDiscovery:
                     device.mac_address = entry['mac']
                     break
 
-        # Check if it's a potential MK3 based on various heuristics
-        device.is_mk3_candidate = self._check_mk3_candidate(device)
+        # Run MK3 identification (probes port 52000 + scrapes web interface)
+        mk3_info = identify_mk3(device.ip_address, timeout=self.timeout)
+        device.mk3_info = mk3_info
+
+        if mk3_info.is_mk3:
+            device.is_mk3_candidate = True
+            device.device_name = mk3_info.device_name
+            device.model = mk3_info.model
+            device.firmware_version = mk3_info.firmware_version
+            # Merge open ports
+            for port in mk3_info.open_ports:
+                if port not in device.open_ports:
+                    device.open_ports.append(port)
+            # Use hostname from identifier if we didn't get one from DNS
+            if not device.hostname and mk3_info.hostname:
+                device.hostname = mk3_info.hostname
+        else:
+            # Fallback to heuristic check
+            device.is_mk3_candidate = self._check_mk3_candidate(device)
 
         return device
 
     def _check_mk3_candidate(self, device: DiscoveredDevice) -> bool:
         """Check if a device is a potential MK3 amplifier."""
+        # Port 52000 is the strongest indicator
+        if MK3_CONTROL_PORT in device.open_ports:
+            return True
+
         # Check hostname patterns
         if device.hostname:
             hostname_lower = device.hostname.lower()
-            if any(pattern in hostname_lower for pattern in ['dsp', 'sonance', 'mk3', 'amp']):
+            if any(pattern in hostname_lower for pattern in
+                   ['dsp', 'sonance', 'mk3', 'amp', 'sonamp']):
                 return True
 
-        # Check MAC prefix (if known Sonance prefixes are added)
-        if device.mac_address:
-            mac_prefix = device.mac_address[:8].upper().replace(':', '-')
-            if mac_prefix in self.SONANCE_MAC_PREFIXES:
-                return True
-
-        # Check for common ports
-        if 80 in device.open_ports or 23 in device.open_ports:
+        # Check MAC prefix against known Microchip/Sonance OUIs
+        if device.mac_address and check_mac_prefix(device.mac_address):
             return True
 
         return False
@@ -307,7 +331,7 @@ class NetworkDiscovery:
             DiscoveredDevice with available information.
         """
         if ports is None:
-            ports = [80, 23, 443, 8080, 10000, 10001]
+            ports = [MK3_CONTROL_PORT, 80, 23, 443, 8080, 10000, 10001]
 
         logger.info(f"Quick scan of {ip}")
 

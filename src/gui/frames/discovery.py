@@ -142,9 +142,9 @@ class DiscoveryFrame(ctk.CTkFrame):
         """Create the header row for results."""
         header = ctk.CTkFrame(self.results_scroll, fg_color=("gray85", "gray25"))
         header.grid(row=0, column=0, sticky="ew", pady=(0, 5))
-        header.grid_columnconfigure((0, 1, 2, 3, 4), weight=1)
+        header.grid_columnconfigure((0, 1, 2, 3, 4, 5), weight=1)
 
-        headers = ["IP Address", "Hostname", "MAC Address", "Response Time", "Actions"]
+        headers = ["IP Address", "Device / Model", "Firmware", "Hostname / MAC", "Response Time", "Actions"]
         for i, text in enumerate(headers):
             ctk.CTkLabel(
                 header,
@@ -217,68 +217,87 @@ class DiscoveryFrame(ctk.CTkFrame):
 
     def _add_device_row(self, row: int, device) -> None:
         """Add a device row to results."""
-        # Determine row color based on MK3 candidate
-        fg_color = ("gray90", "gray20") if device.is_mk3_candidate else ("transparent", "transparent")
+        is_mk3 = device.is_mk3_candidate
+        fg_color = ("#0f3460", "#0f3460") if is_mk3 else ("transparent", "transparent")
 
         row_frame = ctk.CTkFrame(self.results_scroll, fg_color=fg_color)
         row_frame.grid(row=row, column=0, sticky="ew", pady=2)
-        row_frame.grid_columnconfigure((0, 1, 2, 3, 4), weight=1)
+        row_frame.grid_columnconfigure((0, 1, 2, 3, 4, 5), weight=1)
 
-        # IP Address
-        ip_label = ctk.CTkLabel(
-            row_frame,
-            text=device.ip_address,
-            font=ctk.CTkFont(size=13, weight="bold" if device.is_mk3_candidate else "normal")
-        )
-        ip_label.grid(row=0, column=0, padx=10, pady=8, sticky="w")
+        # IP Address + MK3 badge
+        ip_frame = ctk.CTkFrame(row_frame, fg_color="transparent")
+        ip_frame.grid(row=0, column=0, padx=10, pady=8, sticky="w")
 
-        # Hostname
-        hostname = device.hostname or "-"
         ctk.CTkLabel(
-            row_frame,
-            text=hostname,
-            font=ctk.CTkFont(size=13)
+            ip_frame,
+            text=device.ip_address,
+            font=ctk.CTkFont(size=13, weight="bold" if is_mk3 else "normal")
+        ).pack(side="left")
+
+        if is_mk3:
+            mk3_badge = ctk.CTkFrame(ip_frame, fg_color="#4a9fd4", corner_radius=4)
+            mk3_badge.pack(side="left", padx=(6, 0))
+            ctk.CTkLabel(
+                mk3_badge, text="MK3",
+                font=ctk.CTkFont(size=9, weight="bold"), text_color="white",
+            ).pack(padx=5, pady=1)
+
+        # Device Name / Model
+        device_name = device.device_name or device.model or "-"
+        model = device.model or ""
+        display_name = device_name
+        if model and model != device_name:
+            display_name = f"{device_name} ({model})"
+        ctk.CTkLabel(
+            row_frame, text=display_name,
+            font=ctk.CTkFont(size=12, weight="bold" if model else "normal"),
+            text_color="#4a9fd4" if model else "gray60",
         ).grid(row=0, column=1, padx=10, pady=8, sticky="w")
 
-        # MAC Address
-        mac = device.mac_address or "-"
+        # Firmware Version
+        fw = device.firmware_version or "-"
         ctk.CTkLabel(
-            row_frame,
-            text=mac,
-            font=ctk.CTkFont(size=12, family="Consolas")
+            row_frame, text=f"v{fw}" if fw != "-" else fw,
+            font=ctk.CTkFont(size=12, family="Consolas"),
+            text_color="#22c55e" if fw != "-" else "gray60",
         ).grid(row=0, column=2, padx=10, pady=8, sticky="w")
+
+        # Hostname / MAC
+        host_mac = device.hostname or ""
+        mac = device.mac_address or ""
+        if host_mac and mac:
+            host_mac_text = f"{host_mac}\n{mac}"
+        else:
+            host_mac_text = host_mac or mac or "-"
+        ctk.CTkLabel(
+            row_frame, text=host_mac_text,
+            font=ctk.CTkFont(size=11), text_color="gray60",
+        ).grid(row=0, column=3, padx=10, pady=8, sticky="w")
 
         # Response Time
         resp_time = f"{device.response_time_ms:.1f}ms" if device.response_time_ms else "-"
         ctk.CTkLabel(
-            row_frame,
-            text=resp_time,
-            font=ctk.CTkFont(size=13)
-        ).grid(row=0, column=3, padx=10, pady=8, sticky="w")
+            row_frame, text=resp_time, font=ctk.CTkFont(size=13)
+        ).grid(row=0, column=4, padx=10, pady=8, sticky="w")
 
         # Actions
         actions_frame = ctk.CTkFrame(row_frame, fg_color="transparent")
-        actions_frame.grid(row=0, column=4, padx=10, pady=5, sticky="w")
+        actions_frame.grid(row=0, column=5, padx=10, pady=5, sticky="w")
 
         select_btn = ctk.CTkButton(
-            actions_frame,
-            text="Select",
-            width=70,
-            height=28,
+            actions_frame, text="Select", width=70, height=28,
             command=lambda ip=device.ip_address: self._select_device(ip),
             font=ctk.CTkFont(size=12)
         )
         select_btn.pack(side="left", padx=2)
 
         if device.open_ports:
-            ports_text = ", ".join(str(p) for p in device.open_ports[:3])
-            if len(device.open_ports) > 3:
+            ports_text = ", ".join(str(p) for p in sorted(device.open_ports)[:4])
+            if len(device.open_ports) > 4:
                 ports_text += "..."
             ctk.CTkLabel(
-                actions_frame,
-                text=f"Ports: {ports_text}",
-                font=ctk.CTkFont(size=11),
-                text_color="gray60"
+                actions_frame, text=f"Ports: {ports_text}",
+                font=ctk.CTkFont(size=11), text_color="gray60"
             ).pack(side="left", padx=10)
 
     def _select_device(self, ip: str) -> None:

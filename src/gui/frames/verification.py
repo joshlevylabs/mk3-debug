@@ -15,6 +15,7 @@ from ...network.firmware_api import (
     APIError,
     fetch_async,
 )
+from ...network.firmware_updater import FirmwareUpdater, update_firmware_async
 from ..components import ResultCard
 from ..components.result_card import ResultStatus
 
@@ -553,15 +554,17 @@ class DeviceFirmwareRow(ctk.CTkFrame):
 
         # Update the update badge based on stable channel
         if channel == "stable" and firmware:
-            from ...utils.updater import parse_version
-            installed_t = parse_version(self.installed_version)
-            latest_t = parse_version(firmware.version)
-            if latest_t > installed_t:
-                self._update_badge.configure(fg_color=COLORS['warning'])
-                self._update_label.configure(text=f"Update available: v{firmware.version}")
-            else:
-                self._update_badge.configure(fg_color=COLORS['success'])
-                self._update_label.configure(text="Up to date")
+            try:
+                installed_t = tuple(int(x) for x in self.installed_version.split(".") if x.isdigit())
+                latest_t = firmware.version_tuple
+                if latest_t > installed_t:
+                    self._update_badge.configure(fg_color=COLORS['warning'])
+                    self._update_label.configure(text=f"Update available: v{firmware.version}")
+                else:
+                    self._update_badge.configure(fg_color=COLORS['success'])
+                    self._update_label.configure(text="Up to date")
+            except (ValueError, TypeError):
+                pass
 
     @property
     def latest_stable(self) -> Optional[FirmwareInfo]:
@@ -571,12 +574,14 @@ class DeviceFirmwareRow(ctk.CTkFrame):
 # ── Firmware version browser widget ────────────────────────────────────
 
 class FirmwareVersionCard(ctk.CTkFrame):
-    """Shows details for a single firmware version."""
+    """Shows details for a single firmware version with optional install button."""
 
-    def __init__(self, master, firmware: FirmwareInfo, **kwargs):
+    def __init__(self, master, firmware: FirmwareInfo,
+                 on_install: Optional[Callable] = None, **kwargs):
         super().__init__(master, fg_color="#0f172a", corner_radius=8,
                          border_width=1, border_color="#2a2a4a", **kwargs)
         self._firmware = firmware
+        self._on_install = on_install
         self._build_ui()
 
     def _build_ui(self) -> None:
@@ -584,7 +589,7 @@ class FirmwareVersionCard(ctk.CTkFrame):
         container = ctk.CTkFrame(self, fg_color="transparent")
         container.pack(fill="x", padx=12, pady=8)
 
-        # Row 1: version + channel badge + status
+        # Row 1: version + channel badge + status + install button
         row1 = ctk.CTkFrame(container, fg_color="transparent")
         row1.pack(fill="x")
 
@@ -611,6 +616,17 @@ class FirmwareVersionCard(ctk.CTkFrame):
                 font=ctk.CTkFont(family=FONT_FAMILY, size=9, weight="bold"),
                 text_color="white",
             ).pack(padx=6, pady=1)
+
+        # Install button on the right
+        if self._on_install:
+            self._install_btn = ctk.CTkButton(
+                row1, text="Install",
+                font=ctk.CTkFont(family=FONT_FAMILY, size=11, weight="bold"),
+                fg_color="#6366f1", hover_color="#4f46e5",
+                width=70, height=24,
+                command=lambda: self._on_install(fw),
+            )
+            self._install_btn.pack(side="right", padx=(8, 0))
 
         # Status on the right
         status_color = COLORS['success'] if fw.status == "released" else COLORS['text_secondary']
@@ -674,6 +690,7 @@ class VerificationFrame(ctk.CTkFrame):
 
         # Firmware API client
         self._api = FirmwareAPIClient(api_key=config.firmware_api_key)
+        self._updater = FirmwareUpdater(self._api)
         self._hardware_models: List[HardwareModel] = []
         self._firmware_list: List[FirmwareInfo] = []
 
@@ -868,11 +885,13 @@ class VerificationFrame(ctk.CTkFrame):
             ip = self._get_target_ip()
         if not ip:
             return
+        # Strip http:// prefix if user pasted a URL
+        ip = ip.replace("http://", "").replace("https://", "").rstrip("/")
         if ip in self._device_rows:
             return  # already added
 
-        self._add_device_row(ip, "Unknown Model", "0.0.0")
-        self._query_device_firmware(ip)
+        self._add_device_row(ip, "Identifying...", "...")
+        self._identify_device(ip)
 
     def _add_device_row(self, ip: str, model: str, version: str) -> None:
         """Add a device row to the panel."""
@@ -883,38 +902,42 @@ class VerificationFrame(ctk.CTkFrame):
         row.pack(fill="x", pady=3)
         self._device_rows[ip] = row
 
-    def _query_device_firmware(self, ip: str) -> None:
-        """Query the device directly (via MK3 protocol) for its firmware version and model."""
-        def _query():
-            model_name = "MK3 Amplifier"
-            fw_version = "0.0.0"
-            try:
-                from ...network.mk3_protocol import MK3ProtocolTester
-                tester = MK3ProtocolTester(ip)
-                status = tester.get_device_status()
-                if status:
-                    fw_version = getattr(status, 'firmware_version', fw_version)
-                    model_name = getattr(status, 'model_name', model_name)
-            except Exception as e:
-                logger.debug("Could not query device %s: %s", ip, e)
+    def _identify_device(self, ip: str) -> None:
+        """Run full MK3 identification: protocol probe + web scraping."""
+        def _run():
+            from ...network.mk3_identifier import identify_mk3
+            info = identify_mk3(ip)
+            self.after(0, lambda: self._on_device_identified(ip, info))
 
-            self.after(0, lambda: self._on_device_queried(ip, model_name, fw_version))
+        threading.Thread(target=_run, daemon=True).start()
 
-        threading.Thread(target=_query, daemon=True).start()
-
-    def _on_device_queried(self, ip: str, model: str, version: str) -> None:
-        """Update the device row after querying it."""
+    def _on_device_identified(self, ip: str, info) -> None:
+        """Update the device row after MK3 identification completes."""
         row = self._device_rows.get(ip)
         if not row:
             return
 
-        # Rebuild the row with the correct info
+        model = info.model or info.device_name or ("MK3 Amplifier" if info.is_mk3 else "Unknown Device")
+        version = info.firmware_version or "unknown"
+        confidence = info.confidence
+
+        # Rebuild the row with the identified info
         row.destroy()
         new_row = DeviceFirmwareRow(self._devices_container, ip, model, version)
         new_row.pack(fill="x", pady=3)
         self._device_rows[ip] = new_row
 
-        # Now check latest firmware versions from API for each channel
+        # Show identification result
+        if info.is_mk3:
+            detected = ", ".join(info.detected_by) if info.detected_by else "unknown"
+            logger.info(
+                "MK3 identified at %s: model=%s, fw=%s, confidence=%s, detected_by=%s",
+                ip, model, version, confidence, detected,
+            )
+        else:
+            logger.info("Device at %s not identified as MK3 (confidence=%s)", ip, confidence)
+
+        # Query firmware API for available versions
         if self._api.has_api_key:
             self._check_firmware_for_device(ip)
 
@@ -1047,7 +1070,10 @@ class VerificationFrame(ctk.CTkFrame):
         self._fw_count_label.configure(text=f"{len(filtered)} version(s)")
 
         for fw in filtered[:20]:  # Show max 20 to keep UI responsive
-            card = FirmwareVersionCard(self._fw_scroll, fw)
+            card = FirmwareVersionCard(
+                self._fw_scroll, fw,
+                on_install=self._on_install_firmware if self._device_rows else None,
+            )
             card.pack(fill="x", pady=2)
 
     # ── 5. Test verification matrix ────────────────────────────────────
@@ -1197,6 +1223,43 @@ class VerificationFrame(ctk.CTkFrame):
         # Update firmware info for any already-added devices
         for ip in list(self._device_rows.keys()):
             self._check_firmware_for_device(ip)
+
+    # ── Firmware install ─────────────────────────────────────────────
+
+    def _on_install_firmware(self, firmware: FirmwareInfo) -> None:
+        """Handle user clicking 'Install' on a firmware version card."""
+        ip = self._get_ip()
+        if not ip:
+            return
+
+        # Confirm with user
+        self._progress_label.configure(
+            text=f"Installing v{firmware.version} to {ip}...",
+            text_color=COLORS['accent'],
+        )
+
+        def _progress(msg: str):
+            self.after(0, lambda m=msg: self._progress_label.configure(text=m))
+
+        def _on_complete(result):
+            if result.success:
+                self.after(0, lambda: self._progress_label.configure(
+                    text=f"Firmware v{firmware.version} installed! {result.message}",
+                    text_color=COLORS['success'],
+                ))
+                # Re-identify device after update
+                self.after(5000, lambda: self._identify_device(ip))
+            else:
+                self.after(0, lambda: self._progress_label.configure(
+                    text=f"Install failed: {result.error}",
+                    text_color=COLORS['error'],
+                ))
+
+        update_firmware_async(
+            self._updater, ip, firmware,
+            callback=_on_complete,
+            progress_callback=_progress,
+        )
 
     # ── Helpers ────────────────────────────────────────────────────────
 
