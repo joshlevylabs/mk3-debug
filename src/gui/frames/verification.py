@@ -579,7 +579,7 @@ class FirmwareVersionCard(ctk.CTkFrame):
     def __init__(self, master, firmware: FirmwareInfo,
                  on_install: Optional[Callable] = None, **kwargs):
         super().__init__(master, fg_color="#1e293b", corner_radius=8,
-                         border_width=1, border_color="#334155", height=60, **kwargs)
+                         border_width=1, border_color="#334155", **kwargs)
         self._firmware = firmware
         self._on_install = on_install
         self._build_ui()
@@ -1022,7 +1022,18 @@ class VerificationFrame(ctk.CTkFrame):
         self._fw_scroll = ctk.CTkScrollableFrame(
             inner, fg_color="#0f172a", height=200,
         )
-        self._fw_scroll.pack(fill="x", expand=True, pady=(8, 0))
+        self._fw_scroll.pack(fill="both", expand=True, pady=(8, 0))
+
+        # Workaround: CTkScrollableFrame doesn't propagate width to children
+        # on macOS — bind canvas resize to stretch the internal frame
+        try:
+            canvas = self._fw_scroll._parent_canvas
+            def _sync_width(event, sf=self._fw_scroll):
+                canvas_w = event.width
+                canvas.itemconfigure("all", width=canvas_w)
+            canvas.bind("<Configure>", _sync_width, add="+")
+        except AttributeError:
+            pass
 
         self._fw_placeholder = ctk.CTkLabel(
             self._fw_scroll,
@@ -1074,10 +1085,16 @@ class VerificationFrame(ctk.CTkFrame):
                 self._fw_scroll, fw,
                 on_install=self._on_install_firmware if self._device_rows else None,
             )
-            card.pack(fill="x", padx=4, pady=4)
+            card.pack(fill="x", padx=6, pady=4, anchor="nw")
 
         # Force scroll frame to update its canvas after adding children
         self._fw_scroll.update_idletasks()
+        # Trigger a canvas width sync for macOS
+        try:
+            canvas = self._fw_scroll._parent_canvas
+            canvas.event_generate("<Configure>")
+        except (AttributeError, Exception):
+            pass
 
     # ── 5. Test verification matrix ────────────────────────────────────
 

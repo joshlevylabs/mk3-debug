@@ -1,6 +1,6 @@
 """MK3 Amplifier Network Diagnostic Tool."""
 
-__version__ = "1.5.0"
+__version__ = "1.5.1"
 __author__ = "Joshua Levy"
 __author_title__ = "Lead Electronics Test Engineer"
 __company__ = "Sonance"
