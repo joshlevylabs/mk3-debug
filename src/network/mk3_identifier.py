@@ -2,11 +2,13 @@
 
 Combines multiple detection strategies:
   1. Port 52000 probe (MK3 binary protocol)
-  2. HTTP web interface scraping (Landing.htm / Status.htm)
-  3. mDNS/Bonjour service discovery
-  4. ARP MAC prefix matching (Microchip OUI)
+  2. WebSocket device info query (ws://IP/ws)
+  3. HTTP web interface scraping (Landing.htm / Status.htm)
+  4. mDNS/Bonjour service discovery
+  5. ARP MAC prefix matching (Microchip OUI)
 """
 
+import json
 import re
 import socket
 import threading
@@ -88,17 +90,24 @@ def identify_mk3(ip: str, timeout: float = PROBE_TIMEOUT) -> MK3DeviceInfo:
     """
     info = MK3DeviceInfo(ip=ip)
 
-    # Method 1: TCP probe on port 52000 (most reliable)
+    # Method 1: TCP probe on port 52000 (most reliable for MK3 detection)
     _probe_mk3_protocol(info, timeout)
 
-    # Method 2: HTTP web interface scraping
-    _scrape_web_interface(info, timeout)
+    # Method 2: WebSocket query for device info (most reliable for metadata)
+    _query_websocket(info, timeout)
 
-    # Method 3: Hostname / DNS check
+    # Method 3: HTTP web interface scraping (fallback)
+    if not info.firmware_version:
+        _scrape_web_interface(info, timeout)
+
+    # Method 4: Hostname / DNS check
     _check_hostname(info)
 
     # Determine overall confidence
     if "protocol" in info.detected_by:
+        info.is_mk3 = True
+        info.confidence = "confirmed"
+    elif "websocket" in info.detected_by:
         info.is_mk3 = True
         info.confidence = "confirmed"
     elif "web_title" in info.detected_by or "web_content" in info.detected_by:
@@ -209,6 +218,73 @@ def _probe_mk3_protocol(info: MK3DeviceInfo, timeout: float) -> None:
                         info.ip, response.hex().upper())
     except (socket.timeout, ConnectionRefusedError, OSError) as e:
         logger.debug("Protocol probe failed for %s: %s", info.ip, e)
+
+
+def _query_websocket(info: MK3DeviceInfo, timeout: float) -> None:
+    """
+    Query the amp's WebSocket endpoint for device info.
+
+    MK3 amps serve a WebSocket at ws://IP/ws that responds to a
+    configure-get-all request with JSON containing deviceinfo
+    (model, firmware version, MAC address, serial number, device name).
+    """
+    try:
+        import websocket
+    except ImportError:
+        logger.debug("websocket-client not installed — WebSocket query unavailable")
+        return
+
+    ws_url = f"ws://{info.ip}/ws"
+    try:
+        ws = websocket.create_connection(
+            ws_url,
+            timeout=timeout + 3,
+            origin=f"http://{info.ip}",
+        )
+        # The amp's JS includes a token field (can be empty for initial reads)
+        ws.send(json.dumps({
+            "type": "configure",
+            "direction": "get",
+            "section": "all",
+            "token": "",
+        }))
+        result = ws.recv()
+        ws.close()
+
+        data = json.loads(result)
+        device_info = data.get("configures", {}).get("deviceinfo", {})
+
+        if device_info:
+            fw = device_info.get("firmwareversion", "")
+            model = device_info.get("devicemodel", "")
+            name = device_info.get("devicename", "") or device_info.get("ampname", "")
+            mac = device_info.get("macaddress", "")
+            serial = device_info.get("serialnumber", "")
+
+            if fw:
+                # Strip leading "V" prefix if present (e.g. "V3.1.34.2750" -> "3.1.34.2750")
+                info.firmware_version = fw.lstrip("Vv")
+            if model:
+                info.model = _normalize_model(model)
+            if name:
+                info.device_name = name
+            if mac:
+                info.mac_address = mac
+            if serial:
+                info.serial_number = serial
+
+            if 80 not in info.open_ports:
+                info.open_ports.append(80)
+            info.detected_by.append("websocket")
+            logger.info(
+                "WebSocket device info for %s: model=%s, fw=%s, name=%s, mac=%s, serial=%s",
+                info.ip, model, fw, name, mac, serial,
+            )
+        else:
+            logger.debug("WebSocket response for %s had no deviceinfo", info.ip)
+
+    except Exception as e:
+        logger.debug("WebSocket query failed for %s: %s", info.ip, e)
 
 
 def _scrape_web_interface(info: MK3DeviceInfo, timeout: float) -> None:

@@ -300,6 +300,9 @@ def _update_macos(
     current_app = _get_app_bundle_path()
     current_exe = _get_running_executable()
 
+    logger.info("Update extraction: app_bundle=%s, main_executable=%s", app_bundle, main_executable)
+    logger.info("Update current: current_app=%s, current_exe=%s", current_app, current_exe)
+
     if app_bundle and current_app:
         # Replacing a .app bundle with a .app bundle
         _progress("replacing", f"Replacing {current_app.name}...", 0)
@@ -315,16 +318,9 @@ def _update_macos(
         shutil.copytree(str(app_bundle), str(dest))
         _progress("replacing", "Application replaced", 100)
 
-        # Find the executable inside the new .app to relaunch
-        new_exe = dest / "Contents" / "MacOS"
-        exe_candidates = list(new_exe.glob("*"))
-        if exe_candidates:
-            relaunch_path = exe_candidates[0]
-            os.chmod(str(relaunch_path), os.stat(str(relaunch_path)).st_mode | stat.S_IEXEC)
-            _progress("done", f"Updated to {dest.name}. Relaunching...")
-            _relaunch_macos(str(relaunch_path))
-        else:
-            _progress("done", "Updated! Please relaunch the application manually.")
+        # Relaunch using the .app bundle path (not the inner binary)
+        _progress("done", f"Updated to {dest.name}. Relaunching...")
+        _relaunch_macos_app(str(dest))
 
         # Clean up backup
         if backup.exists():
@@ -332,7 +328,43 @@ def _update_macos(
 
         return True
 
-    elif main_executable or current_exe:
+    elif app_bundle and not current_app:
+        # We found a .app in the zip but can't determine the running .app path.
+        # Try to replace by looking in common locations.
+        _progress("replacing", "Replacing application...", 0)
+        current_exe = _get_running_executable()
+
+        if current_exe:
+            # Walk up from the exe to guess the .app location
+            # e.g. /Users/x/Downloads/MK3_Diagnostic_Tool.app/Contents/MacOS/MK3_Diagnostic_Tool
+            candidate = current_exe
+            for _ in range(5):
+                candidate = candidate.parent
+                if candidate.name.endswith(".app") or candidate.parent == candidate:
+                    break
+
+            if candidate.name.endswith(".app"):
+                dest = candidate.parent / app_bundle.name
+                backup = candidate.parent / f"{candidate.name}.backup"
+                if candidate.exists():
+                    if backup.exists():
+                        shutil.rmtree(backup)
+                    candidate.rename(backup)
+                shutil.copytree(str(app_bundle), str(dest))
+                _progress("done", f"Updated to {dest.name}. Relaunching...")
+                _relaunch_macos_app(str(dest))
+                if backup.exists():
+                    shutil.rmtree(backup, ignore_errors=True)
+                return True
+
+        # Last resort: place it next to the download
+        dest = download_path.parent / app_bundle.name
+        shutil.copytree(str(app_bundle), str(dest))
+        _progress("done", f"Updated! Saved to {dest}. Please relaunch manually.")
+        return True
+
+    elif main_executable or _get_running_executable():
+        current_exe = _get_running_executable()
         # PyInstaller --onedir: find the extracted folder containing the exe
         # and replace the entire directory
         if not main_executable:
@@ -373,19 +405,35 @@ def _update_macos(
             os.chmod(str(current_exe), os.stat(str(current_exe)).st_mode | stat.S_IEXEC)
 
             _progress("done", "Updated! Relaunching...")
-            _relaunch_macos(str(current_exe))
+            _relaunch_macos_app(str(current_exe))
             return True
 
-    _progress("error", "Could not find application to replace")
+    _progress("error", f"Could not find application to replace. "
+              f"app_bundle={app_bundle}, current_app={current_app}, current_exe={current_exe}")
+    logger.error(
+        "macOS update failed: app_bundle=%s, current_app=%s, current_exe=%s, "
+        "extracted contents: %s",
+        app_bundle, current_app, current_exe,
+        list(extract_dir.rglob("*"))[:20],
+    )
     return False
 
 
-def _relaunch_macos(exe_path: str) -> None:
-    """Relaunch the app on macOS after a short delay."""
-    script = f'''
-    sleep 1
-    open "{exe_path}"
-    '''
+def _relaunch_macos_app(app_path: str) -> None:
+    """Relaunch the app on macOS after a short delay.
+
+    Uses 'open -a' for .app bundles, or direct execution for binaries.
+    """
+    if app_path.endswith(".app"):
+        script = f'''
+        sleep 1
+        open -a "{app_path}"
+        '''
+    else:
+        script = f'''
+        sleep 1
+        "{app_path}" &
+        '''
     subprocess.Popen(["bash", "-c", script])
     # Give the script a moment to start
     time.sleep(0.5)
