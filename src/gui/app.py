@@ -3191,7 +3191,7 @@ class MK3DiagnosticApp(ctk.CTk):
 
         ctk.CTkButton(
             inner,
-            text="Download Update",
+            text="Install Update",
             font=ctk.CTkFont(family=self.FONT_FAMILY, size=12, weight="bold"),
             fg_color=self.COLORS['success'],
             hover_color="#219a52",
@@ -3215,10 +3215,72 @@ class MK3DiagnosticApp(ctk.CTk):
         ).pack(side="right")
 
     def _download_update(self) -> None:
-        """Open the download page for the update."""
-        if self._update_info:
-            from ..utils.updater import open_download
-            open_download(self._update_info)
+        """Download, extract, and replace the app with the latest version."""
+        if not self._update_info:
+            return
+
+        from ..utils.updater import download_and_replace_async, UpdateProgress
+
+        # Replace the banner with a progress indicator
+        self._dismiss_update_banner()
+
+        self._update_banner = ctk.CTkFrame(
+            self.main_frame,
+            fg_color="#1a2a3a",
+            corner_radius=8,
+            border_width=1,
+            border_color=self.COLORS['accent'],
+            height=50,
+        )
+        self._update_banner.pack(fill="x", padx=20, pady=(10, 0), before=list(self.views.values())[0])
+
+        inner = ctk.CTkFrame(self._update_banner, fg_color="transparent")
+        inner.pack(fill="x", padx=15, pady=8)
+
+        self._update_status_label = ctk.CTkLabel(
+            inner,
+            text="Starting update...",
+            font=ctk.CTkFont(family=self.FONT_FAMILY, size=13),
+            text_color=self.COLORS['accent'],
+        )
+        self._update_status_label.pack(side="left")
+
+        self._update_progress_bar = ctk.CTkProgressBar(
+            inner, width=200, height=12,
+            progress_color=self.COLORS['accent'],
+        )
+        self._update_progress_bar.set(0)
+        self._update_progress_bar.pack(side="right")
+
+        def on_progress(progress: UpdateProgress):
+            def _update():
+                self._update_status_label.configure(text=progress.message)
+                if progress.percent > 0:
+                    self._update_progress_bar.set(progress.percent / 100)
+                if progress.stage == "error":
+                    self._update_status_label.configure(text_color=self.COLORS['error'])
+                    self._update_progress_bar.configure(progress_color=self.COLORS['error'])
+                elif progress.stage == "done":
+                    self._update_status_label.configure(text_color=self.COLORS['success'])
+                    self._update_progress_bar.set(1.0)
+                    self._update_progress_bar.configure(progress_color=self.COLORS['success'])
+            self.after(0, _update)
+
+        def on_done(success: bool):
+            if not success:
+                # Fallback: open browser download
+                self.after(0, lambda: self._update_status_label.configure(
+                    text="Auto-update failed. Opening download page...",
+                    text_color=self.COLORS['warning'],
+                ))
+                from ..utils.updater import open_download
+                self.after(1500, lambda: open_download(self._update_info))
+
+        download_and_replace_async(
+            self._update_info,
+            progress_callback=on_progress,
+            done_callback=on_done,
+        )
 
     def _dismiss_update_banner(self) -> None:
         """Dismiss the update banner."""
@@ -3279,13 +3341,13 @@ class MK3DiagnosticApp(ctk.CTk):
                 ))
                 dialog.after(0, lambda: ctk.CTkButton(
                     btn_frame,
-                    text="Download Update",
+                    text="Install Update",
                     font=ctk.CTkFont(family=self.FONT_FAMILY, size=13, weight="bold"),
                     fg_color=self.COLORS['success'],
                     hover_color="#219a52",
                     height=36,
                     width=150,
-                    command=lambda: (self._download_update(), dialog.destroy()),
+                    command=lambda: (dialog.destroy(), self._download_update()),
                 ).pack(side="left", padx=5))
             elif info:
                 dialog.after(0, lambda: status_label.configure(
