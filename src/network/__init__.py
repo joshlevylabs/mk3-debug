@@ -20,6 +20,7 @@ from .mk3_protocol import (
     GroupProtectBits,
     ThermalState,
 )
+from .firmware_api import FirmwareAPIClient, HardwareModel, FirmwareInfo, UpdateCheck, APIError, fetch_async
 from .mk3_commands import (
     MK3CommandBuilder,
     MK3ResponseParser,
@@ -71,4 +72,11 @@ __all__ = [
     "hex_string_to_bytes",
     "volume_db_to_hex",
     "volume_hex_to_db",
+    # Firmware API
+    "FirmwareAPIClient",
+    "HardwareModel",
+    "FirmwareInfo",
+    "UpdateCheck",
+    "APIError",
+    "fetch_async",
 ]

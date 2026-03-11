@@ -96,6 +96,9 @@ class Config:
     log_level: str = "DEBUG"
     max_log_entries: int = 10000
 
+    # Firmware API settings
+    firmware_api_key: str = ""
+
     # Last used values (persisted)
     last_ip_address: str = ""
     recent_ip_addresses: List[str] = field(default_factory=list)
