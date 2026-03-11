@@ -265,34 +265,33 @@ def _update_macos(
     """
     macOS update: extract .zip containing .app bundle, replace existing.
 
-    The zip typically contains a folder like MK3_Diagnostic_Tool/ with
-    the .app bundle inside, or the .app directly.
+    Uses native macOS tools (unzip, ditto) to preserve symlinks, extended
+    attributes, and code-signing that Python's zipfile/shutil would destroy.
     """
     _progress("extracting", "Extracting update...", 0)
 
     extract_dir = tmp_dir / "extracted"
     extract_dir.mkdir()
 
-    with zipfile.ZipFile(download_path, "r") as zf:
-        zf.extractall(extract_dir)
+    # Use native unzip to preserve symlinks and macOS metadata
+    result = subprocess.run(
+        ["unzip", "-o", str(download_path), "-d", str(extract_dir)],
+        capture_output=True, text=True,
+    )
+    if result.returncode != 0:
+        logger.error("unzip failed: %s", result.stderr)
+        _progress("error", f"Extraction failed: {result.stderr[:200]}")
+        return False
 
     _progress("extracting", "Finding application bundle...", 50)
 
-    # Find the .app bundle or the main executable in the extracted files
+    # Find the .app bundle in extracted contents
     app_bundle = None
-    main_executable = None
-
-    for root, dirs, files in os.walk(extract_dir):
-        root_path = Path(root)
-        # Look for .app bundle
+    for root, dirs, _files in os.walk(extract_dir):
         for d in dirs:
             if d.endswith(".app"):
-                app_bundle = root_path / d
+                app_bundle = Path(root) / d
                 break
-        # Look for the main executable (PyInstaller --onedir output)
-        for f in files:
-            if f == "MK3_Diagnostic_Tool" or f == "MK3 Diagnostic Tool":
-                main_executable = root_path / f
         if app_bundle:
             break
 
@@ -300,142 +299,102 @@ def _update_macos(
     current_app = _get_app_bundle_path()
     current_exe = _get_running_executable()
 
-    logger.info("Update extraction: app_bundle=%s, main_executable=%s", app_bundle, main_executable)
+    logger.info("Update extraction: app_bundle=%s", app_bundle)
     logger.info("Update current: current_app=%s, current_exe=%s", current_app, current_exe)
 
-    if app_bundle and current_app:
-        # Replacing a .app bundle with a .app bundle
-        _progress("replacing", f"Replacing {current_app.name}...", 0)
-        dest = current_app.parent / app_bundle.name
-        backup = current_app.parent / f"{current_app.name}.backup"
+    # If we can't find current .app via helper, walk up from exe
+    if not current_app and current_exe:
+        candidate = current_exe
+        for _ in range(5):
+            candidate = candidate.parent
+            if candidate.name.endswith(".app"):
+                current_app = candidate
+                break
 
-        # Backup current, move new in
+    if not app_bundle:
+        _progress("error", "No .app bundle found in the downloaded update")
+        logger.error("No .app found in: %s", list(extract_dir.rglob("*"))[:20])
+        return False
+
+    if not current_app:
+        # Can't find our own .app — place the new one beside the download
+        dest = Path.home() / "Applications" / app_bundle.name
+        _progress("replacing", f"Installing to {dest}...")
+        if dest.exists():
+            shutil.rmtree(dest)
+        subprocess.run(["ditto", str(app_bundle), str(dest)], check=True)
+        _progress("done", f"Installed to {dest}. Relaunching...")
+        _relaunch_macos_app(str(dest))
+        return True
+
+    # Replace the running .app with the new one using ditto
+    _progress("replacing", f"Replacing {current_app.name}...", 0)
+    dest = current_app.parent / app_bundle.name
+    backup = current_app.parent / f"{current_app.stem}.backup.app"
+
+    try:
+        # Backup current
+        if backup.exists():
+            shutil.rmtree(backup, ignore_errors=True)
         if current_app.exists():
-            if backup.exists():
-                shutil.rmtree(backup)
             current_app.rename(backup)
 
-        shutil.copytree(str(app_bundle), str(dest))
-        _progress("replacing", "Application replaced", 100)
+        # Use ditto to copy — preserves symlinks, code signing, extended attrs
+        result = subprocess.run(
+            ["ditto", str(app_bundle), str(dest)],
+            capture_output=True, text=True,
+        )
+        if result.returncode != 0:
+            # Restore backup on failure
+            logger.error("ditto failed: %s", result.stderr)
+            if backup.exists() and not dest.exists():
+                backup.rename(dest)
+            _progress("error", f"Failed to copy app: {result.stderr[:200]}")
+            return False
 
-        # Relaunch using the .app bundle path (not the inner binary)
+        _progress("replacing", "Application replaced", 100)
         _progress("done", f"Updated to {dest.name}. Relaunching...")
         _relaunch_macos_app(str(dest))
 
-        # Clean up backup
+        # Clean up backup (runs only if relaunch is delayed)
         if backup.exists():
             shutil.rmtree(backup, ignore_errors=True)
 
         return True
 
-    elif app_bundle and not current_app:
-        # We found a .app in the zip but can't determine the running .app path.
-        # Try to replace by looking in common locations.
-        _progress("replacing", "Replacing application...", 0)
-        current_exe = _get_running_executable()
-
-        if current_exe:
-            # Walk up from the exe to guess the .app location
-            # e.g. /Users/x/Downloads/MK3_Diagnostic_Tool.app/Contents/MacOS/MK3_Diagnostic_Tool
-            candidate = current_exe
-            for _ in range(5):
-                candidate = candidate.parent
-                if candidate.name.endswith(".app") or candidate.parent == candidate:
-                    break
-
-            if candidate.name.endswith(".app"):
-                dest = candidate.parent / app_bundle.name
-                backup = candidate.parent / f"{candidate.name}.backup"
-                if candidate.exists():
-                    if backup.exists():
-                        shutil.rmtree(backup)
-                    candidate.rename(backup)
-                shutil.copytree(str(app_bundle), str(dest))
-                _progress("done", f"Updated to {dest.name}. Relaunching...")
-                _relaunch_macos_app(str(dest))
-                if backup.exists():
-                    shutil.rmtree(backup, ignore_errors=True)
-                return True
-
-        # Last resort: place it next to the download
-        dest = download_path.parent / app_bundle.name
-        shutil.copytree(str(app_bundle), str(dest))
-        _progress("done", f"Updated! Saved to {dest}. Please relaunch manually.")
-        return True
-
-    elif main_executable or _get_running_executable():
-        current_exe = _get_running_executable()
-        # PyInstaller --onedir: find the extracted folder containing the exe
-        # and replace the entire directory
-        if not main_executable:
-            # Try to find any executable in the extracted files
-            for root, dirs, files in os.walk(extract_dir):
-                for f in files:
-                    fp = Path(root) / f
-                    if os.access(str(fp), os.X_OK) and not f.endswith(('.py', '.txt', '.md')):
-                        main_executable = fp
-                        break
-
-        if main_executable and current_exe:
-            _progress("replacing", "Replacing application files...", 0)
-
-            # The extracted directory containing the executable
-            new_app_dir = main_executable.parent
-            current_dir = current_exe.parent
-
-            # Backup current
-            backup_dir = current_dir.parent / f"{current_dir.name}.backup"
-            if backup_dir.exists():
-                shutil.rmtree(backup_dir, ignore_errors=True)
-
-            # Copy new files over current (preserving directory)
-            for item in new_app_dir.iterdir():
-                dest_item = current_dir / item.name
-                if dest_item.exists():
-                    if dest_item.is_dir():
-                        shutil.rmtree(dest_item)
-                    else:
-                        dest_item.unlink()
-                if item.is_dir():
-                    shutil.copytree(str(item), str(dest_item))
-                else:
-                    shutil.copy2(str(item), str(dest_item))
-
-            # Make executable
-            os.chmod(str(current_exe), os.stat(str(current_exe)).st_mode | stat.S_IEXEC)
-
-            _progress("done", "Updated! Relaunching...")
-            _relaunch_macos_app(str(current_exe))
-            return True
-
-    _progress("error", f"Could not find application to replace. "
-              f"app_bundle={app_bundle}, current_app={current_app}, current_exe={current_exe}")
-    logger.error(
-        "macOS update failed: app_bundle=%s, current_app=%s, current_exe=%s, "
-        "extracted contents: %s",
-        app_bundle, current_app, current_exe,
-        list(extract_dir.rglob("*"))[:20],
-    )
-    return False
+    except Exception as e:
+        # Restore backup on any error
+        logger.error("macOS update failed: %s", e)
+        if backup.exists() and not current_app.exists():
+            try:
+                backup.rename(current_app)
+            except Exception:
+                pass
+        _progress("error", f"Update failed: {e}")
+        return False
 
 
 def _relaunch_macos_app(app_path: str) -> None:
     """Relaunch the app on macOS after a short delay.
 
-    Uses 'open -a' for .app bundles, or direct execution for binaries.
+    Removes quarantine flag and uses 'open' to launch the .app bundle.
     """
     if app_path.endswith(".app"):
+        # Remove quarantine attribute that macOS adds to downloaded apps,
+        # then open the .app bundle (not 'open -a' which uses LaunchServices
+        # cache and can fail for freshly-replaced bundles)
         script = f'''
-        sleep 1
-        open -a "{app_path}"
+        sleep 2
+        xattr -rd com.apple.quarantine "{app_path}" 2>/dev/null
+        open "{app_path}"
         '''
     else:
         script = f'''
-        sleep 1
+        sleep 2
+        chmod +x "{app_path}"
         "{app_path}" &
         '''
     subprocess.Popen(["bash", "-c", script])
-    # Give the script a moment to start
     time.sleep(0.5)
     sys.exit(0)
 
