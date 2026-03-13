@@ -40,15 +40,14 @@ IS_LINUX = platform.system() == "Linux"
 
 # Platform-specific settings
 if IS_WINDOWS:
-    ICON_PATH = "public/sonancelogo.ico"
+    ICON_PATH = "public/sonanceA.ico"
     DATA_SEPARATOR = ";"
 elif IS_MACOS:
-    # macOS uses .icns format, fall back to no icon if not available
-    ICON_PATH = "public/sonancelogo.icns" if Path("public/sonancelogo.icns").exists() else None
+    ICON_PATH = "public/sonanceA.icns"
     DATA_SEPARATOR = ":"
 else:
     # Linux
-    ICON_PATH = "public/sonancelogo.png" if Path("public/sonancelogo.png").exists() else None
+    ICON_PATH = "public/sonanceA.png" if Path("public/sonanceA.png").exists() else None
     DATA_SEPARATOR = ":"
 
 

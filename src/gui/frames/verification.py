@@ -967,6 +967,10 @@ class VerificationFrame(ctk.CTkFrame):
         else:
             logger.info("Device at %s not identified as MK3 (confidence=%s)", ip, confidence)
 
+        # Auto-set hardware model filter based on identified model
+        if info.is_mk3 and model:
+            self._auto_set_hw_model_filter(model)
+
         # Query firmware API for available versions
         if self._api.has_api_key:
             self._check_firmware_for_device(ip)
@@ -1067,6 +1071,32 @@ class VerificationFrame(ctk.CTkFrame):
 
     def _on_hw_model_filter_changed(self, _value: str) -> None:
         self._render_firmware_list()
+
+    def _auto_set_hw_model_filter(self, device_model: str) -> None:
+        """Auto-set the hardware model filter based on the identified device model."""
+        # Set channel filter to "all"
+        self._channel_filter.set("all")
+
+        # Try to match the device model to one of the hardware model filter values
+        current_values = self._hw_model_filter.cget("values") or []
+        device_model_lower = device_model.lower().replace("-", "").replace("_", "").replace(" ", "")
+
+        best_match = None
+        for val in current_values:
+            if val == "all":
+                continue
+            val_lower = val.lower().replace("-", "").replace("_", "").replace(" ", "")
+            # Check for substring match in either direction
+            if device_model_lower in val_lower or val_lower in device_model_lower:
+                best_match = val
+                break
+
+        if best_match:
+            self._hw_model_filter.set(best_match)
+            self._render_firmware_list()
+            logger.info("Auto-set firmware filter to hardware model: %s", best_match)
+        else:
+            logger.debug("No firmware filter match for device model: %s", device_model)
 
     def _render_firmware_list(self) -> None:
         """Re-render the firmware version cards based on current filters."""
@@ -1191,19 +1221,31 @@ class VerificationFrame(ctk.CTkFrame):
             text_color="#64748b",
         )
 
-        # Build all test cards initially
+        # Initially hide test matrix — show placeholder until firmware is selected
+        self._test_cards_container.grid_remove()
+        self._test_placeholder = ctk.CTkLabel(
+            self._test_content_scroll,
+            text="Select a firmware version above to populate the test matrix",
+            font=ctk.CTkFont(family=FONT_FAMILY, size=14),
+            text_color="#64748b",
+        )
+        self._test_placeholder.grid(row=2, column=0, columnspan=2, pady=30)
+        self._test_matrix_visible = False
+
+        # Build all test cards (but hidden)
         self._rebuild_test_cards(TEST_GROUPS)
+        # NOTE: _bottom_action_bar is created below; we'll hide it after creation
 
         # ── Bottom action bar ──
-        bottom_frame = ctk.CTkFrame(
+        self._bottom_action_bar = ctk.CTkFrame(
             self._test_content_scroll, fg_color=COLORS['card_bg'], corner_radius=12,
         )
-        bottom_frame.grid(
+        self._bottom_action_bar.grid(
             row=3, column=0, columnspan=2,
             sticky="ew", padx=6, pady=(12, 6),
         )
 
-        btn_inner = ctk.CTkFrame(bottom_frame, fg_color="transparent")
+        btn_inner = ctk.CTkFrame(self._bottom_action_bar, fg_color="transparent")
         btn_inner.pack(fill="x", padx=20, pady=14)
 
         self._run_all_btn = ctk.CTkButton(
@@ -1236,6 +1278,9 @@ class VerificationFrame(ctk.CTkFrame):
             text_color=COLORS['text_secondary'],
         )
         self._progress_label.pack(side="right", padx=(0, 20))
+
+        # Hide the bottom action bar initially (same as test matrix)
+        self._bottom_action_bar.grid_remove()
 
     def _rebuild_test_cards(self, test_groups: List[Dict[str, Any]]) -> None:
         """Destroy existing test cards and rebuild with the given test groups."""
@@ -1271,14 +1316,31 @@ class VerificationFrame(ctk.CTkFrame):
             card.grid(row=row, column=col, sticky="nsew", padx=6, pady=6)
             self._test_cards[tg['key']] = card
 
+    def _show_test_matrix(self) -> None:
+        """Show the test matrix (hidden until firmware selected)."""
+        if not self._test_matrix_visible:
+            self._test_placeholder.grid_remove()
+            self._test_cards_container.grid()
+            if hasattr(self, '_bottom_action_bar'):
+                self._bottom_action_bar.grid()
+            self._test_matrix_visible = True
+
+    def _hide_test_matrix(self) -> None:
+        """Hide the test matrix and show placeholder."""
+        self._test_cards_container.grid_remove()
+        if hasattr(self, '_bottom_action_bar'):
+            self._bottom_action_bar.grid_remove()
+        self._test_placeholder.grid()
+        self._test_matrix_visible = False
+
     def _on_test_firmware_changed(self, value: str) -> None:
         """Handle firmware-under-test selection change."""
         if value.startswith("all"):
             self._selected_test_firmware = None
             self._release_notes_frame.grid_forget()
-            self._rebuild_test_cards(TEST_GROUPS)
+            self._hide_test_matrix()
             self._test_match_label.configure(
-                text=f"{len(TEST_GROUPS)} tests",
+                text="Select a firmware to see relevant tests",
                 text_color=COLORS['text_secondary'],
             )
             return
@@ -1333,6 +1395,7 @@ class VerificationFrame(ctk.CTkFrame):
             matched = TEST_GROUPS
 
         self._rebuild_test_cards(matched)
+        self._show_test_matrix()
         self._test_match_label.configure(
             text=f"{len(matched)}/{len(TEST_GROUPS)} tests match",
             text_color=COLORS['success'] if matched else COLORS['warning'],

@@ -221,10 +221,24 @@ class MK3DiagnosticApp(ctk.CTk):
         bottom_frame = ctk.CTkFrame(self.sidebar, fg_color="transparent")
         bottom_frame.pack(side="bottom", fill="x", pady=15)
 
+        # Check for Updates button
+        self._update_check_btn = ctk.CTkButton(
+            bottom_frame,
+            text="Check for Updates",
+            font=ctk.CTkFont(family=self.FONT_FAMILY, size=13),
+            fg_color="transparent",
+            hover_color=self.COLORS['sidebar_hover'],
+            anchor="w",
+            height=36,
+            corner_radius=8,
+            command=self._manual_update_check
+        )
+        self._update_check_btn.pack(fill="x", padx=10, pady=(0, 4))
+
         # About button
         about_btn = ctk.CTkButton(
             bottom_frame,
-            text="ℹ️  About",
+            text="About",
             font=ctk.CTkFont(family=self.FONT_FAMILY, size=13),
             fg_color="transparent",
             hover_color=self.COLORS['sidebar_hover'],
@@ -1773,18 +1787,49 @@ class MK3DiagnosticApp(ctk.CTk):
                     if ip in self._arp_cache:
                         device.mac_address = self._arp_cache[ip]
 
-                    # Try to resolve hostname - first socket, then NetBIOS
+                    # Try to resolve hostname - socket, then NetBIOS, then mDNS
                     try:
                         hostname, _, _ = socket.gethostbyaddr(ip)
                         device.hostname = hostname
                     except:
-                        # Try NetBIOS (what AngryIP Scanner uses)
+                        # Try NetBIOS
                         try:
                             result = self._hostname.resolve_via_netbios(ip)
                             if result.success and result.hostname:
                                 device.hostname = result.hostname
                         except:
                             pass
+
+                    # Try mDNS if still no hostname (finds .local hostnames like DSP2-750MKIII.local)
+                    if not device.hostname:
+                        try:
+                            mdns_result = self._hostname.resolve_via_mdns(ip, browse_timeout=2.0)
+                            if mdns_result.success and mdns_result.hostname:
+                                device.hostname = mdns_result.hostname
+                        except:
+                            pass
+
+                    # Run MK3 identification (probes port 52000, WebSocket, HTTP)
+                    try:
+                        from ..network.mk3_identifier import identify_mk3
+                        mk3_info = identify_mk3(ip, timeout=self._discovery.timeout)
+                        device.mk3_info = mk3_info
+                        if mk3_info.is_mk3:
+                            device.is_mk3_candidate = True
+                            device.device_name = mk3_info.device_name
+                            device.model = mk3_info.model
+                            device.firmware_version = mk3_info.firmware_version
+                            for port in mk3_info.open_ports:
+                                if port not in device.open_ports:
+                                    device.open_ports.append(port)
+                            # Use hostname from identifier if we didn't get one
+                            if not device.hostname and mk3_info.hostname:
+                                device.hostname = mk3_info.hostname
+                        else:
+                            # Heuristic check based on hostname/MAC
+                            device.is_mk3_candidate = self._discovery._check_mk3_candidate(device)
+                    except Exception as e:
+                        logger.debug(f"MK3 identification failed for {ip}: {e}")
 
                     return device
 
@@ -1818,10 +1863,15 @@ class MK3DiagnosticApp(ctk.CTk):
                         # Update progress
                         self.after(0, lambda c=completed, f=found_count, t=total: update_progress(c, f, t))
 
-                # Scan complete
+                # Scan complete — sort MK3 amps to the top
                 if not self._discovery._cancel_flag.is_set():
+                    self._discovered_devices.sort(
+                        key=lambda d: (not d.is_mk3_candidate, d.ip_address)
+                    )
+                    mk3_count = sum(1 for d in self._discovered_devices if d.is_mk3_candidate)
+                    self.after(0, self._update_device_list)
                     self.after(0, lambda: self.scan_progress.configure(
-                        text=f"Complete: {len(self._discovered_devices)} devices in {range_display}"
+                        text=f"Complete: {len(self._discovered_devices)} devices ({mk3_count} MK3 amps) in {range_display}"
                     ))
                     self.after(0, lambda: self.scan_progress_bar.set(1.0))
 
@@ -2002,8 +2052,13 @@ class MK3DiagnosticApp(ctk.CTk):
         )
         checkbox.pack(side="left")
 
-        # Status indicator
-        status_color = self.COLORS['success'] if device.response_time_ms else self.COLORS['error']
+        # Status indicator — green for MK3 amps, green for responding, red for not
+        if device.is_mk3_candidate:
+            status_color = self.COLORS['success']
+        elif device.response_time_ms:
+            status_color = self.COLORS['accent']
+        else:
+            status_color = self.COLORS['error']
         status = ctk.CTkFrame(inner, fg_color=status_color, width=12, height=12, corner_radius=6)
         status.pack(side="left", padx=(10, 15))
 
@@ -2027,6 +2082,18 @@ class MK3DiagnosticApp(ctk.CTk):
             font=ctk.CTkFont(family=self.FONT_FAMILY, size=13),
             text_color=hostname_color
         ).pack(anchor="w")
+
+        # Model/firmware line for MK3 amps
+        if device.is_mk3_candidate and (device.model or device.firmware_version):
+            model_text = device.model or "MK3"
+            fw_text = f"v{device.firmware_version}" if device.firmware_version else ""
+            mk3_detail = f"{model_text}  {fw_text}".strip()
+            ctk.CTkLabel(
+                info_frame,
+                text=mk3_detail,
+                font=ctk.CTkFont(family=self.FONT_FAMILY, size=12, weight="bold"),
+                text_color=self.COLORS['accent']
+            ).pack(anchor="w")
 
         # Details
         details_frame = ctk.CTkFrame(inner, fg_color="transparent")
@@ -2095,7 +2162,38 @@ class MK3DiagnosticApp(ctk.CTk):
             command=lambda ip=device.ip_address: self._run_quick_diagnostic(ip)
         ).pack(side="left", padx=5)
 
+        # Verification button for MK3 amps
+        if device.is_mk3_candidate:
+            ctk.CTkButton(
+                actions,
+                text="Verification",
+                font=ctk.CTkFont(family=self.FONT_FAMILY, size=12, weight="bold"),
+                fg_color=self.COLORS['success'],
+                hover_color="#219a52",
+                width=110,
+                height=30,
+                command=lambda d=device: self._switch_to_verification(d)
+            ).pack(side="left", padx=5)
+
         return card
+
+    def _switch_to_verification(self, device) -> None:
+        """Switch to the Verification tab with the device's IP pre-filled."""
+        ip = device.ip_address
+
+        # Switch to verification view
+        self._switch_view("verification")
+
+        # Get the verification frame and set its IP, then auto-add the device
+        verification_frame = self.views.get("verification")
+        if verification_frame and hasattr(verification_frame, '_ip_entry'):
+            verification_frame._ip_entry.delete(0, "end")
+            verification_frame._ip_entry.insert(0, ip)
+            # Trigger device identification automatically
+            if hasattr(verification_frame, '_add_device_from_ip'):
+                verification_frame._add_device_from_ip()
+
+        logger.info(f"Switched to Verification for {ip}")
 
     def _toggle_device_selection(self, ip: str, selected: bool) -> None:
         """Toggle device selection."""
@@ -3148,6 +3246,59 @@ class MK3DiagnosticApp(ctk.CTk):
         ).pack(side="left")
 
     # ── Update system ─────────────────────────────────────────────────
+
+    def _manual_update_check(self) -> None:
+        """Manually check for updates when user clicks the button."""
+        from .. import __version__
+        from ..utils.updater import check_for_update_async
+
+        self._update_check_btn.configure(text="Checking...", state="disabled")
+
+        def on_result(update_info):
+            self.after(0, lambda: self._update_check_btn.configure(
+                text="Check for Updates", state="normal"
+            ))
+            if update_info and update_info.is_newer:
+                self._update_info = update_info
+                self.after(0, self._show_update_banner)
+            else:
+                self.after(0, lambda: self._show_no_update_message(__version__))
+
+        check_for_update_async(__version__, on_result)
+
+    def _show_no_update_message(self, current_version: str) -> None:
+        """Show a brief message that the app is up to date."""
+        self._dismiss_update_banner()
+        self._update_banner = ctk.CTkFrame(
+            self.main_frame,
+            fg_color="#1a2a3a",
+            corner_radius=8,
+            border_width=1,
+            border_color=self.COLORS['accent'],
+            height=44,
+        )
+        self._update_banner.pack(fill="x", padx=20, pady=(10, 0), before=list(self.views.values())[0])
+
+        inner = ctk.CTkFrame(self._update_banner, fg_color="transparent")
+        inner.pack(fill="x", padx=15, pady=8)
+
+        ctk.CTkLabel(
+            inner,
+            text=f"You're up to date! Running v{current_version}",
+            font=ctk.CTkFont(family=self.FONT_FAMILY, size=13),
+            text_color=self.COLORS['accent'],
+        ).pack(side="left")
+
+        ctk.CTkButton(
+            inner, text="Dismiss", width=70, height=26,
+            font=ctk.CTkFont(family=self.FONT_FAMILY, size=11),
+            fg_color="transparent", hover_color=self.COLORS['sidebar_hover'],
+            border_width=1, border_color=self.COLORS['text_secondary'],
+            command=self._dismiss_update_banner,
+        ).pack(side="right")
+
+        # Auto-dismiss after 5 seconds
+        self.after(5000, self._dismiss_update_banner)
 
     def _check_for_updates(self) -> None:
         """Check for updates in background on startup."""
