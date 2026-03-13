@@ -1052,9 +1052,9 @@ class VerificationFrame(ctk.CTkFrame):
         )
         self._fw_count_label.pack(side="right")
 
-        # Firmware versions list (plain frame — parent page already scrolls)
-        self._fw_scroll = ctk.CTkFrame(
-            inner, fg_color="#0f172a", corner_radius=8,
+        # Firmware versions list (scrollable so cards are always visible)
+        self._fw_scroll = ctk.CTkScrollableFrame(
+            inner, fg_color="#0f172a", corner_radius=8, height=250,
         )
         self._fw_scroll.pack(fill="x", pady=(8, 0))
 
