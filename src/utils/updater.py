@@ -393,15 +393,16 @@ def _relaunch_macos_app(app_path: str) -> None:
     """Relaunch the app on macOS after a short delay.
 
     Removes quarantine flag and uses 'open' to launch the .app bundle.
+    Uses nohup + start_new_session to ensure the relaunch script survives
+    the parent process exit.
     """
     if app_path.endswith(".app"):
-        # Remove quarantine attribute that macOS adds to downloaded apps,
-        # then open the .app bundle (not 'open -a' which uses LaunchServices
-        # cache and can fail for freshly-replaced bundles)
+        # Remove quarantine, reset LaunchServices, then open with --new
+        # to avoid macOS caching the old bundle
         script = f'''
         sleep 2
         xattr -rd com.apple.quarantine "{app_path}" 2>/dev/null
-        open "{app_path}"
+        /usr/bin/open -n "{app_path}"
         '''
     else:
         script = f'''
@@ -409,9 +410,17 @@ def _relaunch_macos_app(app_path: str) -> None:
         chmod +x "{app_path}"
         "{app_path}" &
         '''
-    subprocess.Popen(["bash", "-c", script])
-    time.sleep(0.5)
-    sys.exit(0)
+    # Use start_new_session to detach the child process so it survives sys.exit
+    subprocess.Popen(
+        ["nohup", "bash", "-c", script],
+        start_new_session=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        stdin=subprocess.DEVNULL,
+    )
+    time.sleep(1)
+    # Force exit — os._exit avoids cleanup handlers that might block
+    os._exit(0)
 
 
 def _update_windows(
