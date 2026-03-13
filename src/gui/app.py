@@ -3258,7 +3258,10 @@ class MK3DiagnosticApp(ctk.CTk):
             self.after(0, lambda: self._update_check_btn.configure(
                 text="Check for Updates", state="normal"
             ))
-            if update_info and update_info.is_newer:
+            if update_info is None:
+                # Check failed (network/SSL error)
+                self.after(0, lambda: self._show_update_check_error())
+            elif update_info.is_newer:
                 self._update_info = update_info
                 self.after(0, self._show_update_banner)
             else:
@@ -3298,6 +3301,39 @@ class MK3DiagnosticApp(ctk.CTk):
         ).pack(side="right")
 
         # Auto-dismiss after 5 seconds
+        self.after(5000, self._dismiss_update_banner)
+
+    def _show_update_check_error(self) -> None:
+        """Show a brief error when update check fails."""
+        self._dismiss_update_banner()
+        self._update_banner = ctk.CTkFrame(
+            self.main_frame,
+            fg_color="#2a1a1a",
+            corner_radius=8,
+            border_width=1,
+            border_color=self.COLORS['error'],
+            height=44,
+        )
+        self._update_banner.pack(fill="x", padx=20, pady=(10, 0), before=list(self.views.values())[0])
+
+        inner = ctk.CTkFrame(self._update_banner, fg_color="transparent")
+        inner.pack(fill="x", padx=15, pady=8)
+
+        ctk.CTkLabel(
+            inner,
+            text="Could not check for updates — check your internet connection",
+            font=ctk.CTkFont(family=self.FONT_FAMILY, size=13),
+            text_color=self.COLORS['error'],
+        ).pack(side="left")
+
+        ctk.CTkButton(
+            inner, text="Dismiss", width=70, height=26,
+            font=ctk.CTkFont(family=self.FONT_FAMILY, size=11),
+            fg_color="transparent", hover_color=self.COLORS['sidebar_hover'],
+            border_width=1, border_color=self.COLORS['text_secondary'],
+            command=self._dismiss_update_banner,
+        ).pack(side="right")
+
         self.after(5000, self._dismiss_update_banner)
 
     def _check_for_updates(self) -> None:

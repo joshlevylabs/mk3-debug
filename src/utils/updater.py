@@ -21,6 +21,14 @@ from . import get_logger
 
 logger = get_logger(__name__)
 
+# SSL CA bundle for PyInstaller bundles
+_CA_BUNDLE = None
+try:
+    import certifi
+    _CA_BUNDLE = certifi.where()
+except ImportError:
+    pass
+
 GITHUB_REPO = "joshlevylabs/mk3-debug"
 GITHUB_API_URL = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
 
@@ -64,11 +72,18 @@ def check_for_update(current_version: str) -> Optional[UpdateInfo]:
     Returns None on any network error (fails silently).
     """
     try:
-        resp = requests.get(
-            GITHUB_API_URL,
-            headers={"Accept": "application/vnd.github.v3+json"},
-            timeout=10,
-        )
+        kwargs = {
+            "headers": {"Accept": "application/vnd.github.v3+json"},
+            "timeout": 10,
+        }
+        if _CA_BUNDLE:
+            kwargs["verify"] = _CA_BUNDLE
+        try:
+            resp = requests.get(GITHUB_API_URL, **kwargs)
+        except requests.exceptions.SSLError:
+            logger.warning("SSL error checking updates, retrying without verification")
+            kwargs["verify"] = False
+            resp = requests.get(GITHUB_API_URL, **kwargs)
         resp.raise_for_status()
         data = resp.json()
 
