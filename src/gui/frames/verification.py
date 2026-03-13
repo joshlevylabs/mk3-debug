@@ -1107,6 +1107,19 @@ class VerificationFrame(ctk.CTkFrame):
         channel = self._channel_filter.get()
         hw_model = self._hw_model_filter.get()
 
+        logger.info(
+            "Rendering firmware list: total=%d, channel_filter=%s, hw_filter=%s",
+            len(self._firmware_list), channel, hw_model,
+        )
+
+        # Log all firmware for debugging
+        for i, fw in enumerate(self._firmware_list):
+            hw_names = [m.get("name", m.get("model_number", "?")) for m in fw.hardware_models]
+            logger.info(
+                "  fw[%d]: v%s channel=%s status=%s name=%s hw=%s",
+                i, fw.version, fw.channel, fw.status, fw.name, hw_names,
+            )
+
         filtered = self._firmware_list
         if channel != "all":
             filtered = [fw for fw in filtered if fw.channel == channel]
@@ -1116,6 +1129,8 @@ class VerificationFrame(ctk.CTkFrame):
                 if any(m.get("model_number") == hw_model or m.get("name") == hw_model
                        for m in fw.hardware_models)
             ]
+
+        logger.info("After filtering: %d firmware versions", len(filtered))
 
         if not filtered:
             ctk.CTkLabel(
@@ -1129,12 +1144,84 @@ class VerificationFrame(ctk.CTkFrame):
 
         self._fw_count_label.configure(text=f"{len(filtered)} version(s)")
 
-        for fw in filtered[:20]:  # Show max 20 to keep UI responsive
-            card = FirmwareVersionCard(
-                self._fw_scroll, fw,
-                on_install=self._on_install_firmware if self._device_rows else None,
-            )
-            card.pack(fill="x", padx=6, pady=4)
+        for fw in filtered[:20]:
+            # Build firmware row directly (avoids nested-frame rendering issues on macOS)
+            row_frame = ctk.CTkFrame(self._fw_scroll, fg_color="#1e293b",
+                                     corner_radius=8, border_width=1,
+                                     border_color="#334155")
+            row_frame.pack(fill="x", padx=6, pady=4)
+
+            inner = ctk.CTkFrame(row_frame, fg_color="transparent")
+            inner.pack(fill="x", padx=12, pady=8)
+
+            # Top row: version + channel badge
+            top = ctk.CTkFrame(inner, fg_color="transparent")
+            top.pack(fill="x")
+
+            ctk.CTkLabel(
+                top, text=f"v{fw.version}",
+                font=ctk.CTkFont(family="Consolas", size=13, weight="bold"),
+                text_color=COLORS['text_primary'],
+            ).pack(side="left")
+
+            ch_badge = ctk.CTkFrame(top, fg_color=fw.channel_badge_color, corner_radius=4)
+            ch_badge.pack(side="left", padx=(8, 0))
+            ctk.CTkLabel(
+                ch_badge, text=fw.channel.upper(),
+                font=ctk.CTkFont(family=FONT_FAMILY, size=9, weight="bold"),
+                text_color="white",
+            ).pack(padx=6, pady=1)
+
+            if fw.is_channel_current:
+                cur = ctk.CTkFrame(top, fg_color="#6366f1", corner_radius=4)
+                cur.pack(side="left", padx=(6, 0))
+                ctk.CTkLabel(
+                    cur, text="CURRENT",
+                    font=ctk.CTkFont(family=FONT_FAMILY, size=9, weight="bold"),
+                    text_color="white",
+                ).pack(padx=6, pady=1)
+
+            # Install button
+            if self._device_rows:
+                ctk.CTkButton(
+                    top, text="Install",
+                    font=ctk.CTkFont(family=FONT_FAMILY, size=11, weight="bold"),
+                    fg_color="#6366f1", hover_color="#4f46e5",
+                    width=70, height=24,
+                    command=lambda f=fw: self._on_install_firmware(f),
+                ).pack(side="right", padx=(8, 0))
+
+            # Status
+            status_color = COLORS['success'] if fw.status == "released" else COLORS['text_secondary']
+            ctk.CTkLabel(
+                top, text=fw.status,
+                font=ctk.CTkFont(family=FONT_FAMILY, size=10),
+                text_color=status_color,
+            ).pack(side="right")
+
+            # Name + details
+            if fw.name:
+                ctk.CTkLabel(
+                    inner, text=fw.name,
+                    font=ctk.CTkFont(family=FONT_FAMILY, size=11),
+                    text_color=COLORS['text_secondary'], anchor="w",
+                ).pack(anchor="w", pady=(2, 0))
+
+            details = []
+            if fw.file_name:
+                details.append(fw.file_name)
+            if fw.file_size:
+                details.append(f"{fw.file_size / (1024*1024):.1f} MB")
+            if fw.released_at:
+                details.append(f"Released: {fw.released_at[:10]}")
+            if details:
+                ctk.CTkLabel(
+                    inner, text="  |  ".join(details),
+                    font=ctk.CTkFont(family="Consolas", size=10),
+                    text_color="#64748b", anchor="w",
+                ).pack(anchor="w", pady=(2, 0))
+
+            logger.info("Rendered firmware card: v%s (%s)", fw.version, fw.name)
 
     # ── 5. Test verification matrix ────────────────────────────────────
 
