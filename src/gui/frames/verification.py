@@ -1,9 +1,10 @@
 """Firmware Verification dashboard frame — integrates with sonance-beta.info firmware API."""
 
 import customtkinter as ctk
+import re
 import threading
 import json
-from typing import Optional, Callable, Dict, Any, List
+from typing import Optional, Callable, Dict, Any, List, Set
 from datetime import datetime
 from pathlib import Path
 
@@ -140,6 +141,34 @@ TEST_GROUPS = [
         'color': '#27ae60',
     },
 ]
+
+
+def _extract_jira_tickets(text: str) -> Set[str]:
+    """Extract JIRA-style ticket keys (e.g. DSP3-136) from text."""
+    if not text:
+        return set()
+    return set(re.findall(r'[A-Z][A-Z0-9]+-\d+', text))
+
+
+def _test_matches_tickets(test_group: Dict[str, Any], tickets: Set[str]) -> bool:
+    """Check if a test group's ticket(s) match any of the given JIRA tickets."""
+    test_ticket = test_group.get('ticket', '')
+    if not test_ticket or test_ticket == 'New':
+        return False
+    # Handle multi-ticket like "DSP3-136/134" → DSP3-136, DSP3-134
+    # Also handle plain "DSP3-145"
+    test_tickets = set()
+    parts = re.split(r'[/,]', test_ticket)
+    # Extract the project prefix from the first part
+    first_match = re.match(r'([A-Z][A-Z0-9]+-)', parts[0])
+    prefix = first_match.group(1) if first_match else ''
+    for part in parts:
+        part = part.strip()
+        if re.match(r'[A-Z][A-Z0-9]+-\d+', part):
+            test_tickets.add(part)
+        elif prefix and re.match(r'\d+', part):
+            test_tickets.add(f"{prefix}{part}")
+    return bool(test_tickets & tickets)
 
 
 class ManualTestDialog(ctk.CTkToplevel):
@@ -693,6 +722,7 @@ class VerificationFrame(ctk.CTkFrame):
         self._updater = FirmwareUpdater(self._api)
         self._hardware_models: List[HardwareModel] = []
         self._firmware_list: List[FirmwareInfo] = []
+        self._selected_test_firmware: Optional[FirmwareInfo] = None
 
         self._build_ui()
 
@@ -1079,14 +1109,14 @@ class VerificationFrame(ctk.CTkFrame):
     # ── 5. Test verification matrix ────────────────────────────────────
 
     def _build_test_content(self) -> None:
-        content_scroll = ctk.CTkScrollableFrame(self, fg_color="transparent")
-        content_scroll.grid(row=4, column=0, sticky="nsew", padx=10, pady=(5, 10))
-        content_scroll.grid_columnconfigure(0, weight=1)
-        content_scroll.grid_columnconfigure(1, weight=1)
+        self._test_content_scroll = ctk.CTkScrollableFrame(self, fg_color="transparent")
+        self._test_content_scroll.grid(row=4, column=0, sticky="nsew", padx=10, pady=(5, 10))
+        self._test_content_scroll.grid_columnconfigure(0, weight=1)
+        self._test_content_scroll.grid_columnconfigure(1, weight=1)
 
-        # Section title
-        title_frame = ctk.CTkFrame(content_scroll, fg_color="transparent")
-        title_frame.grid(row=0, column=0, columnspan=2, sticky="ew", padx=6, pady=(0, 8))
+        # ── Header row: title + firmware selector ──
+        title_frame = ctk.CTkFrame(self._test_content_scroll, fg_color="transparent")
+        title_frame.grid(row=0, column=0, columnspan=2, sticky="ew", padx=6, pady=(0, 4))
 
         ctk.CTkLabel(
             title_frame, text="Verification Test Matrix",
@@ -1094,38 +1124,82 @@ class VerificationFrame(ctk.CTkFrame):
             text_color=COLORS['text_primary'], anchor="w",
         ).pack(side="left")
 
+        # Firmware under test selector
         ctk.CTkLabel(
-            title_frame,
-            text="Tests map to JIRA tickets. Run per hardware + firmware combination.",
+            title_frame, text="Firmware Under Test:",
             font=ctk.CTkFont(family=FONT_FAMILY, size=11),
-            text_color=COLORS['text_secondary'], anchor="w",
-        ).pack(side="left", padx=(12, 0))
+            text_color=COLORS['text_secondary'],
+        ).pack(side="left", padx=(20, 0))
 
-        # Build test cards in a 2-column grid
-        for idx, tg in enumerate(TEST_GROUPS):
-            row = (idx // 2) + 1  # +1 to leave room for title
-            col = idx % 2
+        self._test_fw_selector = ctk.CTkComboBox(
+            title_frame,
+            values=["all (show all tests)"],
+            width=220, font=ctk.CTkFont(family=FONT_FAMILY, size=11),
+            command=self._on_test_firmware_changed,
+        )
+        self._test_fw_selector.set("all (show all tests)")
+        self._test_fw_selector.pack(side="left", padx=(6, 0))
 
-            on_stop = None
-            if tg['type'] == 'automated_long':
-                on_stop = self._stop_long_running
+        self._test_match_label = ctk.CTkLabel(
+            title_frame, text="",
+            font=ctk.CTkFont(family=FONT_FAMILY, size=11),
+            text_color=COLORS['text_secondary'],
+        )
+        self._test_match_label.pack(side="right")
 
-            card = TestCard(
-                content_scroll,
-                test_group=tg,
-                on_run=self._make_run_handler(tg),
-                on_stop=on_stop,
-            )
-            card.grid(row=row, column=col, sticky="nsew", padx=6, pady=6)
-            self._test_cards[tg['key']] = card
+        # ── Release notes panel (hidden until firmware selected) ──
+        self._release_notes_frame = ctk.CTkFrame(
+            self._test_content_scroll, fg_color=COLORS['card_bg'], corner_radius=10,
+            border_width=1, border_color="#334155",
+        )
+        # Not gridded initially — shown when a firmware is selected
 
-        # Bottom section
-        bottom_row = ((len(TEST_GROUPS) + 1) // 2) + 1
+        self._release_notes_title = ctk.CTkLabel(
+            self._release_notes_frame, text="",
+            font=ctk.CTkFont(family=FONT_FAMILY, size=13, weight="bold"),
+            text_color=COLORS['text_primary'], anchor="w",
+        )
+        self._release_notes_title.pack(anchor="w", padx=16, pady=(10, 2))
+
+        self._release_notes_tickets_label = ctk.CTkLabel(
+            self._release_notes_frame, text="",
+            font=ctk.CTkFont(family=FONT_FAMILY, size=11),
+            text_color=COLORS['accent'], anchor="w",
+        )
+        self._release_notes_tickets_label.pack(anchor="w", padx=16, pady=(0, 4))
+
+        self._release_notes_text = ctk.CTkTextbox(
+            self._release_notes_frame, height=100,
+            font=ctk.CTkFont(family="Consolas", size=11),
+            wrap="word", fg_color="#0f172a", text_color="#cbd5e1",
+            border_width=0,
+        )
+        self._release_notes_text.pack(fill="x", padx=16, pady=(0, 10))
+
+        # ── Test cards container ──
+        self._test_cards_container = ctk.CTkFrame(
+            self._test_content_scroll, fg_color="transparent",
+        )
+        self._test_cards_container.grid(row=2, column=0, columnspan=2, sticky="ew")
+        self._test_cards_container.grid_columnconfigure(0, weight=1)
+        self._test_cards_container.grid_columnconfigure(1, weight=1)
+
+        self._no_tests_label = ctk.CTkLabel(
+            self._test_cards_container,
+            text="",
+            font=ctk.CTkFont(family=FONT_FAMILY, size=13),
+            text_color="#64748b",
+        )
+
+        # Build all test cards initially
+        self._rebuild_test_cards(TEST_GROUPS)
+
+        # ── Bottom action bar ──
         bottom_frame = ctk.CTkFrame(
-            content_scroll, fg_color=COLORS['card_bg'], corner_radius=12,
+            self._test_content_scroll, fg_color=COLORS['card_bg'], corner_radius=12,
         )
         bottom_frame.grid(
-            row=bottom_row, column=0, columnspan=2,
+            row=3, column=0, columnspan=2,
             sticky="ew", padx=6, pady=(12, 6),
         )
 
@@ -1162,6 +1236,117 @@ class VerificationFrame(ctk.CTkFrame):
             text_color=COLORS['text_secondary'],
         )
         self._progress_label.pack(side="right", padx=(0, 20))
+
+    def _rebuild_test_cards(self, test_groups: List[Dict[str, Any]]) -> None:
+        """Destroy existing test cards and rebuild with the given test groups."""
+        # Clear existing cards
+        for card in self._test_cards.values():
+            card.destroy()
+        self._test_cards.clear()
+
+        if not test_groups:
+            self._no_tests_label.configure(
+                text="No tests match this firmware's release notes.\n"
+                     "Select 'all' to see every test, or choose a different firmware.",
+            )
+            self._no_tests_label.grid(row=0, column=0, columnspan=2, pady=20)
+            return
+
+        self._no_tests_label.grid_forget()
+
+        for idx, tg in enumerate(test_groups):
+            row = idx // 2
+            col = idx % 2
+
+            on_stop = None
+            if tg['type'] == 'automated_long':
+                on_stop = self._stop_long_running
+
+            card = TestCard(
+                self._test_cards_container,
+                test_group=tg,
+                on_run=self._make_run_handler(tg),
+                on_stop=on_stop,
+            )
+            card.grid(row=row, column=col, sticky="nsew", padx=6, pady=6)
+            self._test_cards[tg['key']] = card
+
+    def _on_test_firmware_changed(self, value: str) -> None:
+        """Handle firmware-under-test selection change."""
+        if value.startswith("all"):
+            self._selected_test_firmware = None
+            self._release_notes_frame.grid_forget()
+            self._rebuild_test_cards(TEST_GROUPS)
+            self._test_match_label.configure(
+                text=f"{len(TEST_GROUPS)} tests",
+                text_color=COLORS['text_secondary'],
+            )
+            return
+
+        # Find the firmware by version string
+        version = value.split(" ")[0].lstrip("v")
+        fw = None
+        for f in self._firmware_list:
+            if f.version == version:
+                fw = f
+                break
+
+        if not fw:
+            return
+
+        self._selected_test_firmware = fw
+
+        # Extract JIRA tickets from release notes + description
+        notes = (fw.release_notes or "") + "\n" + (fw.description or "")
+        tickets = _extract_jira_tickets(notes)
+
+        # Show release notes panel
+        self._release_notes_title.configure(
+            text=f"Release Notes — v{fw.version} ({fw.channel})",
+        )
+        if tickets:
+            self._release_notes_tickets_label.configure(
+                text=f"Referenced tickets: {', '.join(sorted(tickets))}",
+            )
+        else:
+            self._release_notes_tickets_label.configure(
+                text="No JIRA tickets found in release notes",
+                text_color=COLORS['warning'],
+            )
+
+        self._release_notes_text.configure(state="normal")
+        self._release_notes_text.delete("1.0", "end")
+        display_notes = fw.release_notes or fw.description or "(no release notes)"
+        self._release_notes_text.insert("1.0", display_notes)
+        self._release_notes_text.configure(state="disabled")
+
+        self._release_notes_frame.grid(
+            row=1, column=0, columnspan=2,
+            sticky="ew", padx=6, pady=(4, 8),
+        )
+
+        # Filter tests
+        if tickets:
+            matched = [tg for tg in TEST_GROUPS if _test_matches_tickets(tg, tickets)]
+        else:
+            # No tickets found — show all tests with a warning
+            matched = TEST_GROUPS
+
+        self._rebuild_test_cards(matched)
+        self._test_match_label.configure(
+            text=f"{len(matched)}/{len(TEST_GROUPS)} tests match",
+            text_color=COLORS['success'] if matched else COLORS['warning'],
+        )
+
+    def _update_test_firmware_selector(self) -> None:
+        """Update the firmware-under-test dropdown with available firmware versions."""
+        values = ["all (show all tests)"]
+        for fw in self._firmware_list:
+            ch = fw.channel.upper()
+            has_notes = bool(fw.release_notes or fw.description)
+            notes_indicator = "" if has_notes else " [no notes]"
+            values.append(f"v{fw.version} ({ch}){notes_indicator}")
+        self._test_fw_selector.configure(values=values)
 
     # ── Firmware API data fetching ─────────────────────────────────────
 
@@ -1219,6 +1404,9 @@ class VerificationFrame(ctk.CTkFrame):
 
         # Render firmware list
         self._render_firmware_list()
+
+        # Update the firmware-under-test selector for the test matrix
+        self._update_test_firmware_selector()
 
         # Update firmware info for any already-added devices
         for ip in list(self._device_rows.keys()):
@@ -1510,11 +1698,20 @@ class VerificationFrame(ctk.CTkFrame):
             text="Running all automated tests...", text_color=COLORS['accent']
         )
 
-        automated_keys = [tg['key'] for tg in TEST_GROUPS if tg['type'] == 'automated']
+        # Only run tests that are currently visible in the filtered matrix
+        automated_keys = [
+            key for key, card in self._test_cards.items()
+            if card.winfo_exists() and any(
+                tg['key'] == key and tg['type'] == 'automated'
+                for tg in TEST_GROUPS
+            )
+        ]
 
         def run():
             for key in automated_keys:
-                card = self._test_cards[key]
+                card = self._test_cards.get(key)
+                if not card:
+                    continue
                 self.after(0, lambda c=card: c.set_running("Running..."))
                 try:
                     test_class = self._get_test_class(key)
