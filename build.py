@@ -69,9 +69,11 @@ def get_pyinstaller_opts():
         "--hidden-import", "netifaces",
         "--hidden-import", "customtkinter",
         "--hidden-import", "PIL",
+        "--hidden-import", "certifi",
 
-        # Collect all of customtkinter
+        # Collect all of customtkinter and certifi CA certs
         "--collect-all", "customtkinter",
+        "--collect-all", "certifi",
     ]
 
     if IS_MACOS:

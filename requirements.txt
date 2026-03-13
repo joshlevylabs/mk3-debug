@@ -6,6 +6,7 @@ Pillow>=10.0.0
 
 # HTTP Client
 requests>=2.31.0
+certifi>=2023.0.0
 
 # DNS Queries
 dnspython>=2.4.0

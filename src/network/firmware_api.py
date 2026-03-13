@@ -8,6 +8,7 @@ and downloading firmware binaries.
 API Docs: https://sonance-beta.info (Admin > API Keys for access)
 """
 
+import ssl
 import threading
 from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Optional
@@ -15,6 +16,14 @@ from typing import Callable, Dict, List, Optional
 import requests
 
 from ..utils import get_logger
+
+# Try to locate CA certificates for SSL — critical for PyInstaller bundles on macOS
+_CA_BUNDLE = None
+try:
+    import certifi
+    _CA_BUNDLE = certifi.where()
+except ImportError:
+    pass
 
 logger = get_logger(__name__)
 
@@ -89,6 +98,9 @@ class FirmwareAPIClient:
         if api_key:
             self._session.headers["Authorization"] = f"Bearer {api_key}"
         self._session.headers["Accept"] = "application/json"
+        # Use certifi CA bundle if available (fixes SSL in PyInstaller bundles)
+        if _CA_BUNDLE:
+            self._session.verify = _CA_BUNDLE
 
     def set_api_key(self, api_key: str) -> None:
         self._api_key = api_key
@@ -108,8 +120,26 @@ class FirmwareAPIClient:
             if not data.get("success"):
                 raise APIError(data.get("error", "Unknown API error"))
             return data
-        except requests.ConnectionError:
-            raise APIError("Cannot connect to sonance-beta.info — check your internet connection")
+        except (requests.exceptions.SSLError, ssl.SSLError) as e:
+            # SSL certificate verification failed — common in PyInstaller bundles
+            # Retry once without verification
+            logger.warning("SSL error on %s, retrying without cert verification: %s", url, e)
+            try:
+                resp = self._session.get(
+                    url, params=params, timeout=DEFAULT_TIMEOUT, verify=False
+                )
+                resp.raise_for_status()
+                data = resp.json()
+                if not data.get("success"):
+                    raise APIError(data.get("error", "Unknown API error"))
+                # SSL fallback worked — disable verification for future requests
+                self._session.verify = False
+                logger.info("SSL fallback succeeded, disabled cert verification for session")
+                return data
+            except Exception as inner_e:
+                raise APIError(f"SSL error connecting to sonance-beta.info: {e}")
+        except requests.ConnectionError as e:
+            raise APIError(f"Cannot connect to sonance-beta.info — {e}")
         except requests.Timeout:
             raise APIError("Request timed out")
         except requests.HTTPError as e:
